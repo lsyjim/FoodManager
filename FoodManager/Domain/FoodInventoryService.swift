@@ -50,6 +50,9 @@ enum FoodValidationError: Error, Equatable {
     case compartmentNotFound
     case unknownCategory
     case invalidReminderDays
+    /// Restoring needs a destination because the original compartment no longer exists.
+    case restoreNeedsCompartment
+    case alreadyActive
 
     static let maxNameLength = 30
     static let maxUnitLength = 8
@@ -67,6 +70,8 @@ enum FoodValidationError: Error, Equatable {
         case .compartmentNotFound: return "存放位置已不存在，請重新選擇"
         case .unknownCategory: return "請選擇分類"
         case .invalidReminderDays: return "保存提醒天數需介於 1 到 3650 天"
+        case .restoreNeedsCompartment: return "原本的隔層已不存在，請選擇要放回的位置"
+        case .alreadyActive: return "這項食材已經在冰箱裡了"
         }
     }
 }
@@ -232,6 +237,50 @@ final class FoodInventoryService {
     func delete(_ id: UUID) throws {
         try store.delete(id: id)
         didChange(removed: id)
+    }
+
+    // MARK: - History
+
+    /// Consumed records, newest consumption first. Throws on read failure (shown with a retry, never as empty).
+    func historyItems() throws -> [FoodItem] {
+        try store.consumedItems(fridgeID: fridgeID).sorted {
+            ($0.consumedAt ?? .distantPast, $0.id.uuidString) > ($1.consumedAt ?? .distantPast, $1.id.uuidString)
+        }
+    }
+
+    /// Name search over history (same matching as active search), keeping newest-consumed order.
+    func searchHistory(_ query: String) throws -> [FoodItem] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let history = try historyItems()
+        return trimmed.isEmpty ? history : history.filter { $0.name.localizedStandardContains(trimmed) }
+    }
+
+    /// Puts a consumed record back into the fridge: same ID, name, category, quantity and dates.
+    /// Uses the original compartment when it still exists; otherwise the caller must pass a destination
+    /// (never moved silently). An expiration date in the past stays as-is and simply shows as expired.
+    @discardableResult
+    func restore(_ id: UUID, to destination: UUID? = nil) throws -> FoodItem {
+        if item(id: id) != nil { throw FoodValidationError.alreadyActive }
+        guard var record = try store.consumedItems(fridgeID: fridgeID).first(where: { $0.id == id }) else {
+            throw FoodStoreError.notFound
+        }
+        let valid = Set(compartments().map(\.id))
+        if let destination {
+            guard valid.contains(destination) else { throw FoodValidationError.compartmentNotFound }
+            record.compartmentID = destination
+        } else if !valid.contains(record.compartmentID) {
+            throw FoodValidationError.restoreNeedsCompartment
+        }
+        record.consumedAt = nil
+        record.updatedAt = now()
+        try persist(record)
+        return record
+    }
+
+    /// Recent distinct foods from active and historical records (for fast entry).
+    func recentFoodSuggestions(limit: Int = RecentFoodSuggestions.defaultLimit) -> [FoodTemplate] {
+        let history = (try? store.consumedItems(fridgeID: fridgeID)) ?? []
+        return RecentFoodSuggestions.build(from: items + history, limit: limit)
     }
 
     // MARK: - Private

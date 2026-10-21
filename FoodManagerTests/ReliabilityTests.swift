@@ -18,6 +18,11 @@ final class FlakyFoodStore: FoodStore {
         return try base.activeItems(fridgeID: fridgeID)
     }
 
+    func consumedItems(fridgeID: UUID) throws -> [FoodItem] {
+        if failReads { throw Failure() }
+        return try base.consumedItems(fridgeID: fridgeID)
+    }
+
     func upsert(_ item: FoodItem) throws {
         if failWrites { throw Failure() }
         try base.upsert(item)

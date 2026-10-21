@@ -63,6 +63,8 @@ enum FoodStoreError: Error, Equatable {
 /// Raw persistence for food records. Business rules live in `FoodInventoryService`.
 protocol FoodStore: AnyObject {
     func activeItems(fridgeID: UUID) throws -> [FoodItem]
+    /// Records marked as consumed (history). Same table, no duplicated rows.
+    func consumedItems(fridgeID: UUID) throws -> [FoodItem]
     func upsert(_ item: FoodItem) throws
     func delete(id: UUID) throws
 }
@@ -79,6 +81,12 @@ final class SwiftDataFoodStore: FoodStore {
         let descriptor = FetchDescriptor<FoodItemRecord>(
             predicate: #Predicate { $0.fridgeID == fridgeID && $0.consumedAt == nil },
             sortBy: [SortDescriptor(\.storedAt), SortDescriptor(\.name)])
+        return try context.fetch(descriptor).map(\.item)
+    }
+
+    func consumedItems(fridgeID: UUID) throws -> [FoodItem] {
+        let descriptor = FetchDescriptor<FoodItemRecord>(
+            predicate: #Predicate { $0.fridgeID == fridgeID && $0.consumedAt != nil })
         return try context.fetch(descriptor).map(\.item)
     }
 

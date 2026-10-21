@@ -12,6 +12,13 @@ final class FoodEditorViewController: UIViewController {
     private let inventory: FoodInventoryService
     private let compartments: [Compartment]
     private let favoriteStore: FavoriteCategoryStore
+    private let favoriteFoodStore: FavoriteFoodStore
+    private var favoriteFoods = FavoriteFoods()
+    private var recentSuggestions: [FoodTemplate] = []
+    private let favoritesRow = UIStackView()
+    private let favoritesHint = UILabel()
+    private let recentRow = UIStackView()
+    private lazy var recentSection = UIView()
     /// Internal (not private) so tests can drive submissions without the form.
     var draft: FoodDraft
 
@@ -32,8 +39,10 @@ final class FoodEditorViewController: UIViewController {
     private let reminderLabel = UILabel()
 
     init(mode: Mode, inventory: FoodInventoryService, compartments: [Compartment],
-         favoriteStore: FavoriteCategoryStore = UserDefaultsFavoriteCategoryStore()) {
+         favoriteStore: FavoriteCategoryStore = UserDefaultsFavoriteCategoryStore(),
+         favoriteFoodStore: FavoriteFoodStore = UserDefaultsFavoriteFoodStore()) {
         self.favoriteStore = favoriteStore
+        self.favoriteFoodStore = favoriteFoodStore
         self.mode = mode
         self.inventory = inventory
         self.compartments = compartments
@@ -110,10 +119,12 @@ final class FoodEditorViewController: UIViewController {
         errorLabel.numberOfLines = 0
         errorLabel.isHidden = true
         stack.addArrangedSubview(errorLabel)
+        if !isEditMode { buildQuickEntry() }
 
         styleField(nameField, placeholder: "例如：牛奶")
         nameField.returnKeyType = .done
         nameField.addAction(UIAction { [weak self] _ in self?.nameField.resignFirstResponder() }, for: .editingDidEndOnExit)
+        nameField.addAction(UIAction { [weak self] _ in self?.reloadRecentRow() }, for: .editingChanged)
         nameField.accessibilityIdentifier = "food.name"
         locationButton.accessibilityIdentifier = "food.location"
         expirySwitch.accessibilityIdentifier = "food.expirySwitch"
@@ -187,6 +198,14 @@ final class FoodEditorViewController: UIViewController {
         reminderLabel.textColor = Theme.Color.textPrimary
         stack.addArrangedSubview(section("保存提醒（選填）", leadingRow([reminderSwitch, reminderLabel, UIView(), reminderStepper])))
 
+        if !isEditMode {
+            let saveAndContinue = UIButton.sketchButton(title: "儲存並繼續新增", systemImage: "plus")
+            saveAndContinue.accessibilityIdentifier = "food.saveAndContinue"
+            saveAndContinue.addAction(UIAction { [weak self] _ in self?.saveAndContinue() }, for: .touchUpInside)
+            stack.setCustomSpacing(24, after: stack.arrangedSubviews.last!)
+            stack.addArrangedSubview(saveAndContinue)
+        }
+
         if isEditMode {
             let consumed = UIButton.sketchButton(title: "標記為已食用", systemImage: "checkmark")
             consumed.addAction(UIAction { [weak self] _ in self?.markConsumed() }, for: .touchUpInside)
@@ -200,6 +219,182 @@ final class FoodEditorViewController: UIViewController {
             stack.setCustomSpacing(28, after: stack.arrangedSubviews.last!)
             stack.addArrangedSubview(actions)
         }
+    }
+
+    // MARK: - Fast entry (favorites + recent)
+
+    private func buildQuickEntry() {
+        favoriteFoods = favoriteFoodStore.load()
+        recentSuggestions = inventory.recentFoodSuggestions()
+
+        let pinCurrent = UIButton(type: .system)
+        pinCurrent.setTitle("加入常用", for: .normal)
+        pinCurrent.setImage(UIImage(systemName: "pin"), for: .normal)
+        pinCurrent.titleLabel?.font = UIFont.preferredFont(forTextStyle: .footnote)
+        pinCurrent.tintColor = Theme.Color.stroke
+        pinCurrent.accessibilityLabel = "把目前的名稱、分類與單位加入常用食材"
+        pinCurrent.addAction(UIAction { [weak self] _ in self?.pinCurrentAsFavorite() }, for: .touchUpInside)
+
+        favoritesHint.text = "填好名稱後按「加入常用」，下次一鍵帶入"
+        favoritesHint.font = UIFont.preferredFont(forTextStyle: .footnote)
+        favoritesHint.textColor = Theme.Color.textSecondary
+        favoritesHint.numberOfLines = 0
+
+        let favoritesHeader = UIStackView(arrangedSubviews: [caption("常用食材"), UIView(), pinCurrent])
+        favoritesHeader.alignment = .center
+        let favorites = UIStackView(arrangedSubviews: [favoritesHeader, chipScroller(favoritesRow), favoritesHint])
+        favorites.axis = .vertical
+        favorites.spacing = 6
+        stack.addArrangedSubview(favorites)
+
+        let recent = UIStackView(arrangedSubviews: [caption("最近使用"), chipScroller(recentRow)])
+        recent.axis = .vertical
+        recent.spacing = 6
+        recentSection = recent
+        stack.addArrangedSubview(recent)
+        stack.setCustomSpacing(20, after: recent)
+
+        reloadFavoritesRow()
+        reloadRecentRow()
+    }
+
+    private func caption(_ text: String) -> UILabel {
+        let label = UILabel()
+        label.text = text
+        label.font = Theme.Font.caption
+        label.textColor = Theme.Color.textSecondary
+        return label
+    }
+
+    private func chipScroller(_ row: UIStackView) -> UIScrollView {
+        let scroller = UIScrollView()
+        scroller.showsHorizontalScrollIndicator = false
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+        scroller.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: scroller.contentLayoutGuide.topAnchor),
+            row.bottomAnchor.constraint(equalTo: scroller.contentLayoutGuide.bottomAnchor),
+            row.leadingAnchor.constraint(equalTo: scroller.contentLayoutGuide.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: scroller.contentLayoutGuide.trailingAnchor),
+            row.heightAnchor.constraint(equalTo: scroller.frameLayoutGuide.heightAnchor),
+            scroller.heightAnchor.constraint(equalToConstant: 40),
+        ])
+        return scroller
+    }
+
+    private func chip(_ template: FoodTemplate, identifier: String) -> UIButton {
+        var config = UIButton.Configuration.plain()
+        config.title = template.name
+        config.image = CategoryIconProvider.image(for: template.categoryID, size: 20).withRenderingMode(.alwaysOriginal)
+        config.imagePadding = 6
+        config.baseForegroundColor = Theme.Color.textPrimary
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 12)
+        let button = UIButton(configuration: config)
+        button.backgroundColor = Theme.Color.interior
+        button.layer.cornerRadius = 18
+        button.layer.borderWidth = Theme.Metric.strokeWidth
+        button.layer.borderColor = Theme.Color.divider.cgColor
+        button.accessibilityIdentifier = identifier
+        button.accessibilityHint = "點兩下帶入名稱、分類與單位"
+        button.addAction(UIAction { [weak self] _ in self?.applyTemplate(template) }, for: .touchUpInside)
+        return button
+    }
+
+    private func reloadFavoritesRow() {
+        favoritesRow.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for (index, favorite) in favoriteFoods.templates.enumerated() {
+            let button = chip(favorite.template, identifier: "food.favorite.\(favorite.name)")
+            // Long-press: unpin or reorder manually (order never changes automatically).
+            var actions: [UIMenuElement] = [UIAction(title: "取消釘選", image: UIImage(systemName: "pin.slash")) { [weak self] _ in
+                self?.updateFavorites { $0.unpin(favorite.id) }
+            }]
+            if index > 0 {
+                actions.append(UIAction(title: "往前移", image: UIImage(systemName: "arrow.left")) { [weak self] _ in
+                    self?.updateFavorites { $0.move(from: index, to: index - 1) }
+                })
+            }
+            if index < favoriteFoods.templates.count - 1 {
+                actions.append(UIAction(title: "往後移", image: UIImage(systemName: "arrow.right")) { [weak self] _ in
+                    self?.updateFavorites { $0.move(from: index, to: index + 1) }
+                })
+            }
+            button.menu = UIMenu(children: actions)
+            favoritesRow.addArrangedSubview(button)
+        }
+        favoritesHint.isHidden = !favoriteFoods.templates.isEmpty
+        favoritesRow.superview?.isHidden = favoriteFoods.templates.isEmpty // no empty gap
+    }
+
+    private func reloadRecentRow() {
+        guard !isEditMode else { return }
+        recentRow.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let matches = RecentFoodSuggestions.filter(recentSuggestions, query: nameField.text ?? "")
+            .filter { FoodNameKey.normalize($0.name) != FoodNameKey.normalize(nameField.text ?? "") }
+        for template in matches { recentRow.addArrangedSubview(chip(template, identifier: "food.recent.\(template.name)")) }
+        recentSection.isHidden = matches.isEmpty
+    }
+
+    private func updateFavorites(_ change: (inout FavoriteFoods) -> Void) {
+        change(&favoriteFoods)
+        favoriteFoodStore.save(favoriteFoods)
+        reloadFavoritesRow()
+    }
+
+    /// Fills name, category, unit (and a still-valid preferred compartment) and leaves every other field
+    /// untouched; the user can still edit everything afterwards.
+    func applyTemplate(_ template: FoodTemplate) {
+        draft.apply(template, validCompartmentIDs: Set(compartments.map(\.id)))
+        nameField.text = draft.name
+        unitField.text = draft.unit
+        populateCategory()
+        populateLocation()
+        errorLabel.isHidden = true
+        reloadRecentRow()
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func pinCurrentAsFavorite() {
+        let name = nameField.text ?? ""
+        let template = FoodTemplate(name: name, categoryID: draft.categoryID,
+                                    unit: (unitField.text ?? "").trimmingCharacters(in: .whitespaces).isEmpty ? "個" : unitField.text!,
+                                    preferredCompartmentID: draft.compartmentID)
+        do {
+            try favoriteFoods.pin(template)
+            favoriteFoodStore.save(favoriteFoods)
+            reloadFavoritesRow()
+            ToastView.show("已加入常用食材", in: view)
+        } catch let error as FavoriteFoodError {
+            showError(error.message)
+        } catch {}
+    }
+
+    // MARK: - Continuous entry
+
+    private func saveAndContinue() {
+        view.endEditing(true)
+        if let message = readForm() { return showError(message) }
+        let savedName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch submitSave() {
+        case .success:
+            prepareNextEntry()
+            ToastView.show("已新增「\(savedName)」", in: view)
+            nameField.becomeFirstResponder()
+        case let .failure(message):
+            showError(message) // the form keeps everything the user typed
+        case .needsConsumeConfirmation:
+            break
+        }
+    }
+
+    /// Resets the form for the next item: keeps the compartment (if still valid) and storedAt date;
+    /// clears name, quantity (→ 1), category (→ 其他), unit, expiration and storage reminder.
+    func prepareNextEntry() {
+        draft = draft.nextEntry(validCompartmentIDs: Set(compartments.map(\.id)))
+        recentSuggestions = inventory.recentFoodSuggestions()
+        errorLabel.isHidden = true
+        populate()
+        reloadRecentRow()
     }
 
     private func populate() {

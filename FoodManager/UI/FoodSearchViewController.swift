@@ -42,6 +42,13 @@ final class FoodSearchViewController: UITableViewController, UISearchResultsUpda
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: "完成", primaryAction: UIAction { [weak self] _ in
             self?.dismiss(animated: true)
         })
+        if scope == .all {
+            // History lives next to search: easy to find without another button on the fridge screen.
+            let history = UIBarButtonItem(title: "食用紀錄", image: UIImage(systemName: "clock.arrow.circlepath"),
+                                          primaryAction: UIAction { [weak self] _ in self?.openHistory() })
+            history.accessibilityIdentifier = "search.history"
+            navigationItem.leftBarButtonItem = history
+        }
         searchController.searchResultsUpdater = self
         searchController.obscuresBackgroundDuringPresentation = false
         searchController.searchBar.placeholder = "輸入食材名稱"
@@ -79,6 +86,11 @@ final class FoodSearchViewController: UITableViewController, UISearchResultsUpda
             emptyLabel.text = results.isEmpty ? (query.isEmpty ? "冰箱裡還沒有食材" : "找不到「\(query)」") : nil
         }
         tableView.reloadData()
+    }
+
+    private func openHistory() {
+        navigationController?.pushViewController(FoodHistoryViewController(inventory: inventory, compartments: compartments),
+                                                 animated: true)
     }
 
     private func location(of item: FoodItem) -> String {
