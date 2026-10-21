@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 @testable import FoodManager
 
@@ -127,5 +128,14 @@ final class FavoriteCategoryTests: XCTestCase {
 
     func testPlaceholderGlyphsAreUnique() {
         XCTAssertEqual(Set(FoodCategoryCatalog.all.map(\.placeholderGlyph)).count, 20)
+    }
+
+    /// Regression: bundled illustrations (~170 px) must come back at the requested point size, otherwise
+    /// unconstrained places (e.g. the editor's category button) show them full size.
+    func testIllustrationsAreScaledToRequestedSize() {
+        for category in FoodCategoryCatalog.all {
+            XCTAssertNotNil(UIImage(named: category.assetName), "missing illustration \(category.assetName)")
+            XCTAssertEqual(CategoryIconProvider.image(for: category.id, size: 22).size, CGSize(width: 22, height: 22))
+        }
     }
 }

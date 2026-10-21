@@ -38,6 +38,16 @@
                ReferencedContainer = "container:FoodManager.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "F0D000000000000000000103"
+               BuildableName = "FoodManagerUITests.xctest"
+               BlueprintName = "FoodManagerUITests"
+               ReferencedContainer = "container:FoodManager.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

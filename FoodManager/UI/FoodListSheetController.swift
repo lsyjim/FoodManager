@@ -16,6 +16,7 @@ final class FoodListSheetController: UIViewController, UITableViewDataSource, UI
     private let subtitleLabel = UILabel()
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let emptyLabel = UILabel()
+    private lazy var retryButton = UIButton.sketchButton(title: "重試", systemImage: "arrow.clockwise")
     private lazy var addButton = UIButton.sketchButton(title: "新增食材", systemImage: "plus", filled: true)
 
     init(compartmentID: UUID, inventory: FoodInventoryService, compartments: @escaping () -> [Compartment]) {
@@ -57,7 +58,11 @@ final class FoodListSheetController: UIViewController, UITableViewDataSource, UI
         titleLabel.text = compartment?.name ?? "隔層"
         let storage = compartment.map { $0.storageType == .unspecified ? $0.parentZoneID.displayName : $0.storageType.displayName }
         subtitleLabel.text = [storage, "\(items.count) 項"].compactMap { $0 }.joined(separator: " · ")
-        emptyLabel.isHidden = !items.isEmpty
+        // A failed read is never shown as "empty": it gets its own message and a retry.
+        let failedWithoutData = inventory.loadState.isFailed && items.isEmpty
+        emptyLabel.text = failedWithoutData ? "無法讀取食材資料" : "這裡還沒有食材"
+        emptyLabel.isHidden = !(inventory.isEmpty || items.isEmpty)
+        retryButton.isHidden = !failedWithoutData // with stale data on screen, the home banner offers the retry
         tableView.reloadData()
     }
 
@@ -93,6 +98,9 @@ final class FoodListSheetController: UIViewController, UITableViewDataSource, UI
         view.addSubview(header)
         view.addSubview(tableView)
         view.addSubview(emptyLabel)
+        retryButton.translatesAutoresizingMaskIntoConstraints = false
+        retryButton.addAction(UIAction { [weak self] _ in self?.inventory.retryLoading() }, for: .touchUpInside)
+        view.addSubview(retryButton)
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: view.topAnchor, constant: 22),
             header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: Theme.Metric.gutter),
@@ -103,6 +111,8 @@ final class FoodListSheetController: UIViewController, UITableViewDataSource, UI
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             emptyLabel.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 40),
             emptyLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            retryButton.topAnchor.constraint(equalTo: emptyLabel.bottomAnchor, constant: 12),
+            retryButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
         ])
     }
 
@@ -129,8 +139,7 @@ final class FoodListSheetController: UIViewController, UITableViewDataSource, UI
         let item = items[indexPath.row]
         let consumed = UIContextualAction(style: .normal, title: "已食用") { [weak self] _, _, done in
             guard let self else { return done(false) }
-            FoodActions.perform(on: self) { try self.inventory.markConsumed(item.id) }
-            done(true)
+            done(FoodActions.perform(on: self) { try self.inventory.markConsumed(item.id) })
         }
         consumed.backgroundColor = Theme.Color.stroke
         let move = UIContextualAction(style: .normal, title: "移動") { [weak self] _, _, done in

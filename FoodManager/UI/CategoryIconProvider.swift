@@ -1,6 +1,7 @@
 import UIKit
 
-/// Category artwork lookup. Uses the bundled illustration when present; otherwise draws a quiet
+/// Category artwork lookup. Uses the bundled illustration when present (downscaled to the requested size,
+/// so callers without size constraints never show it at full resolution); otherwise draws a quiet
 /// placeholder (thin circle + one glyph). Images are cached per category and size, so scrolling never
 /// re-decodes or re-renders them, and food records never carry image data.
 enum CategoryIconProvider {
@@ -8,13 +9,19 @@ enum CategoryIconProvider {
 
     static func image(for categoryID: String, size: CGFloat) -> UIImage {
         let category = FoodCategoryCatalog.category(id: categoryID)
-        if let asset = UIImage(named: category.assetName) { return asset }
         let side = max(8, size.rounded())
         let key = "\(category.id)@\(side)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
-        let image = renderPlaceholder(category, side: side)
+        let image = UIImage(named: category.assetName).map { render($0, side: side) } ?? renderPlaceholder(category, side: side)
         cache.setObject(image, forKey: key)
         return image
+    }
+
+    /// Aspect-fits the illustration into a square of `side` points (rendered at screen scale).
+    private static func render(_ asset: UIImage, side: CGFloat) -> UIImage {
+        let bounds = CGRect(x: 0, y: 0, width: side, height: side)
+        let fit = FridgeLayoutEngine.aspectFitRect(contentSize: asset.size, in: bounds)
+        return UIGraphicsImageRenderer(bounds: bounds).image { _ in asset.draw(in: fit) }
     }
 
     private static func renderPlaceholder(_ category: FoodCategory, side: CGFloat) -> UIImage {

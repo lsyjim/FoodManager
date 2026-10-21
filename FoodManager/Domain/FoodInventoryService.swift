@@ -4,6 +4,9 @@ import os
 extension Notification.Name {
     /// Posted (on the main thread) after any successful food mutation so every screen can refresh.
     static let foodInventoryDidChange = Notification.Name("FoodInventoryDidChange")
+    /// Posted after the user saves food with an expiration date or storage reminder (contextual
+    /// moment to offer notification permission).
+    static let foodReminderConfigured = Notification.Name("FoodReminderConfigured")
 }
 
 /// Editable fields of a food record, used by the add/edit screen before anything is persisted.
@@ -68,6 +71,15 @@ enum FoodValidationError: Error, Equatable {
     }
 }
 
+/// Result of the most recent read. `failed` is never shown as an empty fridge.
+enum FoodLoadState: Equatable {
+    case loading
+    case loaded
+    case failed
+
+    var isFailed: Bool { self == .failed }
+}
+
 /// Business rules for the food inventory: validation, quantity rules, moving, consuming and search.
 /// Keeps an in-memory snapshot of active items for the fridge; every mutation persists first, then refreshes.
 final class FoodInventoryService {
@@ -78,7 +90,11 @@ final class FoodInventoryService {
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "Inventory")
 
     /// Active (not consumed) items of this fridge, including any whose compartment no longer exists.
+    /// After a failed read this keeps the last successfully loaded items instead of becoming empty.
     private(set) var items: [FoodItem] = []
+    private(set) var loadState: FoodLoadState = .loading
+    /// True only when a successful read returned no active food (distinct from a failed read).
+    var isEmpty: Bool { loadState == .loaded && items.isEmpty }
 
     init(store: FoodStore, fridgeID: UUID, compartments: @escaping () -> [Compartment], now: @escaping () -> Date = Date.init) {
         self.store = store
@@ -88,12 +104,24 @@ final class FoodInventoryService {
         reload()
     }
 
-    func reload() {
+    /// Re-reads active food. Returns false (and keeps the previous items) when the read fails.
+    @discardableResult
+    func reload() -> Bool {
         do {
             items = try store.activeItems(fridgeID: fridgeID)
+            loadState = .loaded
+            return true
         } catch {
-            logger.error("Failed to load food: \(String(describing: error))")
+            logger.error("Failed to load food: \(String(describing: error), privacy: .private)")
+            loadState = .failed
+            return false
         }
+    }
+
+    /// User-initiated retry after a failed read; notifies observers so every screen refreshes.
+    func retryLoading() {
+        reload()
+        NotificationCenter.default.post(name: .foodInventoryDidChange, object: self)
     }
 
     // MARK: - Queries
@@ -203,7 +231,7 @@ final class FoodInventoryService {
     /// Permanently deletes a record entered by mistake. Only reachable through an explicit, confirmed action.
     func delete(_ id: UUID) throws {
         try store.delete(id: id)
-        didChange()
+        didChange(removed: id)
     }
 
     // MARK: - Private
@@ -219,12 +247,21 @@ final class FoodInventoryService {
         if let compartmentID = draft.compartmentID { item.compartmentID = compartmentID }
     }
 
+    /// Writes first; the in-memory snapshot and observers only update after the write succeeded,
+    /// so a failed save never looks like a successful one.
     private func persist(_ item: FoodItem) throws {
         try store.upsert(item)
-        didChange()
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            if item.isActive { items[index] = item } else { items.remove(at: index) }
+        } else if item.isActive {
+            items.append(item)
+        }
+        didChange(removed: nil)
     }
 
-    private func didChange() {
+    private func didChange(removed: UUID?) {
+        if let removed { items.removeAll { $0.id == removed } }
+        // Refresh from storage too; if that read fails the locally updated snapshot is kept.
         reload()
         NotificationCenter.default.post(name: .foodInventoryDidChange, object: self)
     }

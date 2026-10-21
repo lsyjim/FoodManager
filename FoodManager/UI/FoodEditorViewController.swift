@@ -12,7 +12,8 @@ final class FoodEditorViewController: UIViewController {
     private let inventory: FoodInventoryService
     private let compartments: [Compartment]
     private let favoriteStore: FavoriteCategoryStore
-    private var draft: FoodDraft
+    /// Internal (not private) so tests can drive submissions without the form.
+    var draft: FoodDraft
 
     private let scrollView = UIScrollView()
     private let stack = UIStackView()
@@ -74,6 +75,7 @@ final class FoodEditorViewController: UIViewController {
             self?.save()
         })
         navigationItem.rightBarButtonItem?.style = .done
+        navigationItem.rightBarButtonItem?.accessibilityIdentifier = "food.save"
         buildForm()
         populate()
     }
@@ -112,6 +114,9 @@ final class FoodEditorViewController: UIViewController {
         styleField(nameField, placeholder: "例如：牛奶")
         nameField.returnKeyType = .done
         nameField.addAction(UIAction { [weak self] _ in self?.nameField.resignFirstResponder() }, for: .editingDidEndOnExit)
+        nameField.accessibilityIdentifier = "food.name"
+        locationButton.accessibilityIdentifier = "food.location"
+        expirySwitch.accessibilityIdentifier = "food.expirySwitch"
         stack.addArrangedSubview(section("食材名稱", nameField))
 
         styleMenuButton(categoryButton)
@@ -268,47 +273,116 @@ final class FoodEditorViewController: UIViewController {
         return nil
     }
 
+    // MARK: - Submitting
+    //
+    // Every action closes the editor only after the write succeeded. On failure the editor stays open with
+    // the user's input intact and an inline error. `isSubmitting` blocks repeated taps while a write runs.
+
+    /// Called instead of `dismiss` when set (tests); production dismisses the sheet.
+    var onFinished: (() -> Void)?
+    private(set) var isSubmitting = false
+
     private func save() {
         view.endEditing(true)
         if let message = readForm() { return showError(message) }
-        do {
-            switch mode {
-            case .add:
-                try inventory.add(draft)
-            case let .edit(foodID):
-                try inventory.update(foodID, with: draft)
-            }
-            dismiss(animated: true)
-        } catch FoodValidationError.zeroQuantity {
-            if case let .edit(foodID) = mode, let item = inventory.item(id: foodID) {
-                FoodActions.confirmConsumed(item, inventory: inventory, from: self) { [weak self] in
-                    self?.dismiss(animated: true)
-                }
-            } else {
-                showError("數量需大於 0")
-            }
-        } catch let error as FoodValidationError {
-            showError(error.message)
-        } catch {
-            showError("儲存失敗，請再試一次。")
+        switch submitSave() {
+        case .success: finish()
+        case .needsConsumeConfirmation:
+            guard case let .edit(foodID) = mode, let item = inventory.item(id: foodID) else { return }
+            FoodActions.confirmConsumed(item, inventory: inventory, from: self) { [weak self] in self?.finish() }
+        case let .failure(message):
+            showError(message)
         }
     }
 
+    enum SubmitResult: Equatable {
+        case success
+        case needsConsumeConfirmation
+        case failure(String)
+    }
+
+    /// Persists the current draft. Internal so tests can drive it without UI.
+    func submitSave() -> SubmitResult {
+        guard begin() else { return .failure("正在儲存，請稍候") }
+        defer { isSubmitting = false; setControlsEnabled(true) }
+        do {
+            switch mode {
+            case .add: try inventory.add(draft)
+            case let .edit(foodID): try inventory.update(foodID, with: draft)
+            }
+            if draft.expirationDate != nil || draft.storageReminderDays != nil {
+                NotificationCenter.default.post(name: .foodReminderConfigured, object: nil)
+            }
+            return .success
+        } catch FoodValidationError.zeroQuantity {
+            return isEditMode ? .needsConsumeConfirmation : .failure("數量需大於 0")
+        } catch let error as FoodValidationError {
+            return .failure(error.message)
+        } catch {
+            return .failure("儲存失敗，資料沒有變更。請再試一次。")
+        }
+    }
+
+    func submitConsumed() -> SubmitResult {
+        guard case let .edit(foodID) = mode else { return .failure("找不到這筆食材") }
+        guard begin() else { return .failure("正在儲存，請稍候") }
+        defer { isSubmitting = false; setControlsEnabled(true) }
+        do {
+            try inventory.markConsumed(foodID)
+            return .success
+        } catch {
+            return .failure("無法標記為已食用，資料沒有變更。請再試一次。")
+        }
+    }
+
+    func submitDelete() -> SubmitResult {
+        guard case let .edit(foodID) = mode else { return .failure("找不到這筆食材") }
+        guard begin() else { return .failure("正在儲存，請稍候") }
+        defer { isSubmitting = false; setControlsEnabled(true) }
+        do {
+            try inventory.delete(foodID)
+            return .success
+        } catch {
+            return .failure("無法刪除，資料沒有變更。請再試一次。")
+        }
+    }
+
+    private func begin() -> Bool {
+        guard !isSubmitting else { return false }
+        isSubmitting = true
+        setControlsEnabled(false)
+        return true
+    }
+
+    private func setControlsEnabled(_ enabled: Bool) {
+        navigationItem.leftBarButtonItem?.isEnabled = enabled
+        navigationItem.rightBarButtonItem?.isEnabled = enabled
+    }
+
+    private func finish() {
+        if let onFinished { onFinished() } else { dismiss(animated: true) }
+    }
+
     private func markConsumed() {
-        guard case let .edit(foodID) = mode else { return }
-        FoodActions.perform(on: self) { try inventory.markConsumed(foodID) }
-        dismiss(animated: true)
+        switch submitConsumed() {
+        case .success: finish()
+        case let .failure(message): showError(message)
+        case .needsConsumeConfirmation: break
+        }
     }
 
     private func confirmDelete() {
-        guard case let .edit(foodID) = mode else { return }
+        guard case .edit = mode else { return }
         let alert = UIAlertController(title: "刪除這筆食材？", message: "刪除後無法復原。若已吃完，建議改用「標記為已食用」。",
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "刪除", style: .destructive) { [weak self] _ in
             guard let self else { return }
-            FoodActions.perform(on: self) { try self.inventory.delete(foodID) }
-            self.dismiss(animated: true)
+            switch self.submitDelete() {
+            case .success: self.finish()
+            case let .failure(message): self.showError(message)
+            case .needsConsumeConfirmation: break
+            }
         })
         present(alert, animated: true)
     }

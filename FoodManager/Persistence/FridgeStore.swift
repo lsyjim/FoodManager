@@ -9,11 +9,16 @@ enum FridgeStoreError: Error, Equatable {
 
 /// Persistence boundary for fridges. UI and editor depend on this protocol, not on SwiftData.
 protocol FridgeStore: AnyObject {
-    /// Returns the user's fridge, creating the default one on first launch.
-    func loadOrCreateFridge() throws -> Fridge
+    /// Returns the user's fridge (creating the default one on first launch) and whether its stored
+    /// layout had to be recovered. Loading never rewrites stored layout bytes.
+    func load() throws -> FridgeLoadResult
     /// Validates and atomically replaces the fridge's name/template/layout.
     func saveLayout(_ fridge: Fridge) throws
     func saveDoorState(_ state: DoorState, fridgeID: UUID) throws
+}
+
+extension FridgeStore {
+    func loadOrCreateFridge() throws -> Fridge { try load().fridge }
 }
 
 final class SwiftDataFridgeStore: FridgeStore {
@@ -39,7 +44,7 @@ final class SwiftDataFridgeStore: FridgeStore {
         return try ModelContainer(for: schema, configurations: [configuration])
     }
 
-    func loadOrCreateFridge() throws -> Fridge {
+    func load() throws -> FridgeLoadResult {
         var descriptor = FetchDescriptor<FridgeRecord>(sortBy: [SortDescriptor(\.createdAt)])
         descriptor.fetchLimit = 1
         if let record = try context.fetch(descriptor).first {
@@ -51,7 +56,7 @@ final class SwiftDataFridgeStore: FridgeStore {
                                   layoutData: try StoredLayout.encode(fridge))
         context.insert(record)
         try saveOrRollback()
-        return fridge
+        return FridgeLoadResult(fridge: fridge, recovery: .none)
     }
 
     func saveLayout(_ fridge: Fridge) throws {
@@ -89,24 +94,31 @@ final class SwiftDataFridgeStore: FridgeStore {
         }
     }
 
-    /// Maps a record to the domain model. A corrupt or invalid stored layout falls back to the
-    /// template default in memory (not written back), so the app stays usable and the original bytes survive.
-    private func fridge(from record: FridgeRecord) -> Fridge {
+    /// Maps a record to the domain model without ever writing back:
+    /// - valid layout → used as-is;
+    /// - decodable but invalid → repaired in memory, keeping compartment IDs (food stays attached);
+    /// - undecodable (or unrepairable) → template default with IDs derived from the fridge ID, so the
+    ///   fallback is identical on every launch. The original bytes stay in the store until the user confirms.
+    private func fridge(from record: FridgeRecord) -> FridgeLoadResult {
         let template = FridgeTemplateCatalog.template(id: record.templateID)
         var fridge = Fridge(id: record.id, name: record.name, templateID: template.id,
                             lastDoorState: DoorState(rawValue: record.lastDoorStateRaw) ?? .closed,
                             cabinetCompartments: [], doorCompartments: [])
-        let layout = try? StoredLayout.decode(record.layoutData)
-        if let layout {
+        if let layout = try? StoredLayout.decode(record.layoutData) {
             fridge.cabinetCompartments = layout.cabinetCompartments
             fridge.doorCompartments = layout.doorCompartments
+            if FridgeLayoutEngine.validate(fridge).isEmpty {
+                return FridgeLoadResult(fridge: fridge, recovery: .none)
+            }
+            if let repaired = FridgeLayoutRepair.repair(fridge) {
+                logger.error("Stored layout for a fridge was invalid; repaired in memory keeping compartment IDs")
+                return FridgeLoadResult(fridge: repaired, recovery: .repaired)
+            }
         }
-        if layout == nil || !FridgeLayoutEngine.validate(fridge).isEmpty {
-            logger.error("Stored layout for fridge \(record.id) is invalid; using template default")
-            let fallback = FridgeFactory.makeDefault(template: template, name: record.name)
-            fridge.cabinetCompartments = fallback.cabinetCompartments
-            fridge.doorCompartments = fallback.doorCompartments
-        }
-        return fridge
+        logger.error("Stored layout for a fridge could not be decoded or repaired; showing deterministic default")
+        let fallback = FridgeFactory.makeDefault(template: template, name: record.name, idSeed: record.id)
+        fridge.cabinetCompartments = fallback.cabinetCompartments
+        fridge.doorCompartments = fallback.doorCompartments
+        return FridgeLoadResult(fridge: fridge, recovery: .replacedWithDefault)
     }
 }

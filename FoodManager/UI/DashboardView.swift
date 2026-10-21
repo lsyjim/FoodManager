@@ -7,10 +7,16 @@ final class DashboardView: UIView {
         didSet { reload() }
     }
 
+    /// Tapping 即將到期 / 已過期 / 保存提醒 opens the reminder center with the current storage filter.
+    var onSelectReminder: ((ReminderKindFilter, StorageFilter) -> Void)?
+
     private let stack = UIStackView()
     private var valueLabels: [UILabel] = []
+    private var rows: [UIView] = []
+    /// Row index → reminder filter (row 0, 食材品項, isn't a reminder).
+    private static let reminderKinds: [ReminderKindFilter?] = [nil, .expiringSoon, .expired, .storedTooLong]
     private let filterControl = UISegmentedControl(items: StorageFilter.allCases.map(\.title))
-    private var filter: StorageFilter {
+    var filter: StorageFilter {
         StorageFilter.allCases.indices.contains(filterControl.selectedSegmentIndex)
             ? StorageFilter.allCases[filterControl.selectedSegmentIndex] : .all
     }
@@ -63,12 +69,15 @@ final class DashboardView: UIView {
 
     private func update(_ summary: DashboardSummary) {
         let values = [summary.itemCount, summary.expiringSoonCount, summary.expiredCount, summary.reminderCount]
-        for (label, value) in zip(valueLabels, values) {
+        for (index, (label, value)) in zip(valueLabels, values).enumerated() {
             label.text = value.map(String.init) ?? "—"
+            let title = Self.titles[index]
+            rows[index].accessibilityLabel = "\(filter.title)\(title) \(value.map { "\($0) 項" } ?? "無資料")"
         }
     }
 
     private func makeRow(title: String) -> UIView {
+        let index = valueLabels.count
         let value = UILabel()
         value.font = Theme.Font.metric
         value.textColor = Theme.Color.textPrimary
@@ -80,11 +89,43 @@ final class DashboardView: UIView {
         caption.font = Theme.Font.caption
         caption.textColor = Theme.Color.textSecondary
 
-        let row = UIStackView(arrangedSubviews: [value, caption])
-        row.axis = .vertical
-        row.spacing = 2
+        let texts = UIStackView(arrangedSubviews: [value, caption])
+        texts.axis = .vertical
+        texts.spacing = 2
+        texts.isUserInteractionEnabled = false
+
+        guard let kind = Self.reminderKinds[index] else {
+            texts.isAccessibilityElement = true
+            rows.append(texts)
+            return texts
+        }
+        // Reminder rows are buttons (≥ 44pt tall) with a quiet chevron hint.
+        let chevron = UIImageView(image: UIImage(systemName: "chevron.right",
+                                                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .medium)))
+        chevron.tintColor = Theme.Color.divider
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+        let content = UIStackView(arrangedSubviews: [texts, chevron])
+        content.alignment = .center
+        content.isUserInteractionEnabled = false
+        content.translatesAutoresizingMaskIntoConstraints = false
+        let row = UIControl()
+        row.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: row.topAnchor),
+            content.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            row.heightAnchor.constraint(greaterThanOrEqualToConstant: Theme.Metric.minTouchTarget),
+        ])
         row.isAccessibilityElement = true
-        row.accessibilityLabel = title
+        row.accessibilityTraits = .button
+        row.accessibilityHint = "點兩下查看\(title)的食材"
+        row.accessibilityIdentifier = "dashboard.\(kind)"
+        row.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.onSelectReminder?(kind, self.filter)
+        }, for: .touchUpInside)
+        rows.append(row)
         return row
     }
 

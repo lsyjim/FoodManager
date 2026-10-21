@@ -68,14 +68,18 @@ enum FridgeTemplateCatalog {
 
 enum FridgeFactory {
     /// Builds a fresh fridge from a template's default layout, with packed, validated frames.
+    /// With `idSeed`, compartment IDs are derived deterministically (used for damaged-layout fallback,
+    /// so every launch produces the same IDs instead of a new series).
     static func makeDefault(template: FridgeTemplate = FridgeTemplateCatalog.defaultTemplate,
-                            name: String = "我的冰箱") -> Fridge {
+                            name: String = "我的冰箱", idSeed: UUID? = nil) -> Fridge {
         var fridge = Fridge(id: UUID(), name: name, templateID: template.id, lastDoorState: .closed,
                             cabinetCompartments: [], doorCompartments: [])
         for zone in ZoneID.allCases {
             let seeds = template.defaultLayout[zone] ?? []
             let compartments = seeds.enumerated().map { index, seed in
-                Compartment(id: UUID(), parentZoneID: zone, name: seed.name, type: seed.type,
+                Compartment(id: idSeed.map { FridgeLayoutRepair.deterministicID(seed: $0, salt: "default-\(zone.rawValue)-\(index)") }
+                                ?? UUID(),
+                            parentZoneID: zone, name: seed.name, type: seed.type,
                             storageType: seed.storageType, sortOrder: index,
                             normalizedFrame: NormalizedRect(x: 0, y: 0, width: 1, height: seed.height))
             }

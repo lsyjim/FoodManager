@@ -33,15 +33,20 @@ final class FoodItemCell: UITableViewCell {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         backgroundColor = Theme.Color.interior
         iconView.contentMode = .scaleAspectFit
-        nameLabel.font = Theme.Font.body
+        // Lists follow Dynamic Type (the fridge overlay keeps fixed sizes because its space is bounded).
+        nameLabel.font = UIFont.preferredFont(forTextStyle: .body)
+        nameLabel.adjustsFontForContentSizeCategory = true
+        nameLabel.numberOfLines = 0
         nameLabel.textColor = Theme.Color.textPrimary
-        quantityLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 15, weight: .regular)
+        quantityLabel.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .monospacedDigitSystemFont(ofSize: 15, weight: .regular))
+        quantityLabel.adjustsFontForContentSizeCategory = true
         quantityLabel.textColor = Theme.Color.textPrimary
         quantityLabel.setContentHuggingPriority(.required, for: .horizontal)
         quantityLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        detailLabel.font = Theme.Font.caption
+        detailLabel.font = UIFont.preferredFont(forTextStyle: .footnote)
+        detailLabel.adjustsFontForContentSizeCategory = true
         detailLabel.textColor = Theme.Color.textSecondary
-        detailLabel.numberOfLines = 2
+        detailLabel.numberOfLines = 0
 
         minusButton.accessibilityLabel = "減少數量"
         plusButton.accessibilityLabel = "增加數量"
@@ -117,8 +122,8 @@ enum FoodActions {
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "標記為已食用", style: .default) { _ in
-            perform(on: presenter) { try inventory.markConsumed(item.id) }
-            completion?()
+            // Completion (e.g. closing an editor) only runs when the write really succeeded.
+            if perform(on: presenter, { try inventory.markConsumed(item.id) }) { completion?() }
         })
         presenter.present(alert, animated: true)
     }
@@ -140,15 +145,18 @@ enum FoodActions {
         presenter.present(sheet, animated: true)
     }
 
-    /// Runs a mutation and shows a readable error if it fails.
-    static func perform(on presenter: UIViewController, _ action: () throws -> Void) {
+    /// Runs a mutation and shows a readable error if it fails. Returns whether it succeeded.
+    @discardableResult
+    static func perform(on presenter: UIViewController, _ action: () throws -> Void) -> Bool {
         do {
             try action()
+            return true
         } catch let error as FoodValidationError {
             showError(error.message, on: presenter)
         } catch {
-            showError("操作失敗，請再試一次。", on: presenter)
+            showError("操作失敗，資料沒有變更。請再試一次。", on: presenter)
         }
+        return false
     }
 
     static func showError(_ message: String, on presenter: UIViewController) {

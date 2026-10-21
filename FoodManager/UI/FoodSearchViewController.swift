@@ -3,6 +3,10 @@ import UIKit
 /// Local name search across all active food. An empty query lists everything (including food whose
 /// compartment no longer exists, so nothing can silently disappear). Selecting a result opens its editor.
 final class FoodSearchViewController: UITableViewController, UISearchResultsUpdating {
+    /// `.unplaced` lists only food whose compartment no longer exists, so it can be reassigned by hand.
+    enum Scope { case all, unplaced }
+
+    private let scope: Scope
     private let inventory: FoodInventoryService
     private let compartments: () -> [Compartment]
     private let evaluator = FoodReminderEvaluator()
@@ -10,7 +14,8 @@ final class FoodSearchViewController: UITableViewController, UISearchResultsUpda
     private var results: [FoodItem] = []
     private let emptyLabel = UILabel()
 
-    init(inventory: FoodInventoryService, compartments: @escaping () -> [Compartment]) {
+    init(scope: Scope = .all, inventory: FoodInventoryService, compartments: @escaping () -> [Compartment]) {
+        self.scope = scope
         self.inventory = inventory
         self.compartments = compartments
         super.init(style: .insetGrouped)
@@ -19,9 +24,9 @@ final class FoodSearchViewController: UITableViewController, UISearchResultsUpda
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    static func present(inventory: FoodInventoryService, compartments: @escaping () -> [Compartment],
+    static func present(scope: Scope = .all, inventory: FoodInventoryService, compartments: @escaping () -> [Compartment],
                         from presenter: UIViewController) {
-        let navigation = UINavigationController(rootViewController: FoodSearchViewController(inventory: inventory,
+        let navigation = UINavigationController(rootViewController: FoodSearchViewController(scope: scope, inventory: inventory,
                                                                                              compartments: compartments))
         navigation.modalPresentationStyle = .pageSheet
         presenter.present(navigation, animated: true)
@@ -29,7 +34,7 @@ final class FoodSearchViewController: UITableViewController, UISearchResultsUpda
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "搜尋食材"
+        title = scope == .all ? "搜尋食材" : "需要重新放置"
         view.backgroundColor = Theme.Color.background
         tableView.backgroundColor = Theme.Color.background
         tableView.register(FoodItemCell.self, forCellReuseIdentifier: FoodItemCell.reuseID)
@@ -62,7 +67,17 @@ final class FoodSearchViewController: UITableViewController, UISearchResultsUpda
     @objc private func refresh() {
         let query = searchController.searchBar.text ?? ""
         results = inventory.search(query)
-        emptyLabel.text = results.isEmpty ? (query.isEmpty ? "冰箱裡還沒有食材" : "找不到「\(query)」") : nil
+        if scope == .unplaced {
+            let missing = Set(inventory.itemsWithMissingCompartment.map(\.id))
+            results = results.filter { missing.contains($0.id) }
+        }
+        if inventory.loadState.isFailed {
+            emptyLabel.text = results.isEmpty ? "無法讀取食材資料" : nil
+        } else if scope == .unplaced {
+            emptyLabel.text = results.isEmpty ? "所有食材都已放回冰箱" : nil
+        } else {
+            emptyLabel.text = results.isEmpty ? (query.isEmpty ? "冰箱裡還沒有食材" : "找不到「\(query)」") : nil
+        }
         tableView.reloadData()
     }
 

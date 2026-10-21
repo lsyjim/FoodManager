@@ -91,6 +91,7 @@ final class ClosedFridgeButton: UIButton {
             artwork.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         accessibilityLabel = "冰箱（已關門）"
+        accessibilityIdentifier = "home.openFridge"
         accessibilityHint = "點兩下打開冰箱"
     }
 

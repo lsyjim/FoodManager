@@ -10,6 +10,11 @@ final class FridgeHomeViewController: UIViewController {
     private lazy var inventory = FoodInventoryService(store: foodStore, fridgeID: fridge.id,
                                                       compartments: { [weak self] in self?.fridge.allCompartments ?? [] })
     private weak var foodListSheet: FoodListSheetController?
+    private let notificationClient: NotificationClient
+    /// Keeps pending notifications in sync with the persisted inventory (a delivery mechanism only).
+    private lazy var notifications = NotificationCoordinator(
+        client: notificationClient, preferencesStore: UserDefaultsNotificationPreferencesStore(),
+        snapshot: { [weak self] in (self?.inventory.items ?? [], self?.fridge.allCompartments ?? []) })
     private let template: FridgeTemplate
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "Home")
 
@@ -18,7 +23,10 @@ final class FridgeHomeViewController: UIViewController {
     private var editor: FridgeLayoutEditor?
     private var selectedID: UUID?
     private weak var editSheet: CompartmentEditSheetController?
-    private var loadError: Error?
+    /// Non-none while a damaged stored layout is shown in repaired form and the user hasn't confirmed
+    /// overwriting the original bytes yet.
+    private var layoutRecovery: LayoutRecovery
+    private var hasPresentedRecoveryNotice = false
 
     private var displayedFridge: Fridge { editor?.working ?? fridge }
     private var isEditingLayout: Bool { editor != nil }
@@ -30,9 +38,18 @@ final class FridgeHomeViewController: UIViewController {
     private lazy var editButton = UIButton.sketchButton(title: "編輯", systemImage: "square.and.pencil")
     private lazy var cancelButton = UIButton.sketchButton(title: "取消")
     private lazy var saveButton = UIButton.sketchButton(title: "儲存", filled: true)
+    private lazy var reminderButton: UIButton = {
+        let button = UIButton.sketchButton(title: "", systemImage: "bell")
+        button.accessibilityLabel = "食材提醒"
+        button.accessibilityIdentifier = "home.reminders"
+        button.widthAnchor.constraint(greaterThanOrEqualToConstant: Theme.Metric.minTouchTarget).isActive = true
+        return button
+    }()
 
     // Global food actions (hidden while editing the layout)
     private let actionBar = UIStackView()
+    private let footer = UIStackView()
+    private let statusBanner = UIButton(type: .system)
     private lazy var searchButton = UIButton.sketchButton(title: "搜尋", systemImage: "magnifyingglass")
     private lazy var addFoodButton = UIButton.sketchButton(title: "新增食材", systemImage: "plus", filled: true)
 
@@ -51,15 +68,13 @@ final class FridgeHomeViewController: UIViewController {
     private var fridgeTopWhenEditing: NSLayoutConstraint?
     private var fridgeCenteredWhenBrowsing: NSLayoutConstraint?
 
-    init(store: FridgeStore, foodStore: FoodStore, template: FridgeTemplate = FridgeTemplateCatalog.defaultTemplate) {
-        self.store = store
-        self.foodStore = foodStore
-        do {
-            fridge = try store.loadOrCreateFridge()
-        } catch {
-            fridge = FridgeFactory.makeDefault(template: template)
-            loadError = error
-        }
+    /// Only constructed once storage is confirmed available and the fridge loaded (see `AppBootstrap`).
+    init(session: AppSession, notificationClient: NotificationClient = SystemNotificationClient()) {
+        self.notificationClient = notificationClient
+        store = session.fridgeStore
+        foodStore = session.foodStore
+        fridge = session.loadResult.fridge
+        layoutRecovery = session.loadResult.recovery
         self.template = FridgeTemplateCatalog.template(id: fridge.templateID)
         closedFridgeButton = ClosedFridgeButton(template: self.template)
         fridgeView = FridgeView(template: self.template)
@@ -85,25 +100,135 @@ final class FridgeHomeViewController: UIViewController {
         // Day-based counts (expiry, storage duration) change at midnight and while the app is in the background.
         center.addObserver(self, selector: #selector(inventoryDidChange), name: UIApplication.significantTimeChangeNotification, object: nil)
         center.addObserver(self, selector: #selector(inventoryDidChange), name: UIApplication.didBecomeActiveNotification, object: nil)
+        center.addObserver(self, selector: #selector(reminderConfigured), name: .foodReminderConfigured, object: nil)
+        notifications.scheduleUpdate()
+    }
+
+    /// Contextual permission prompt: offered once, right after the user sets an expiry or storage reminder.
+    @objc private func reminderConfigured() {
+        Task { @MainActor in
+            var preferences = notifications.preferences
+            guard !preferences.hasShownPermissionPrompt, await notifications.authorizationStatus() == .notDetermined else { return }
+            preferences.hasShownPermissionPrompt = true
+            notifications.preferencesStore.save(preferences)
+            try? await Task.sleep(nanoseconds: 600_000_000) // let the editor finish dismissing
+            let alert = UIAlertController(title: "要開啟食材通知嗎？",
+                                          message: "在食材快到期，或存放到你設定的天數時提醒你。不開啟也能在「食材提醒」查看，之後可在通知設定更改。",
+                                          preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "暫時不要", style: .cancel))
+            alert.addAction(UIAlertAction(title: "開啟通知", style: .default) { [weak self] _ in
+                Task { @MainActor in _ = await self?.notifications.requestAuthorization() }
+            })
+            topPresenter.present(alert, animated: true)
+        }
+    }
+
+    private var topPresenter: UIViewController {
+        var top: UIViewController = navigationController ?? self
+        while let presented = top.presentedViewController { top = presented }
+        return top
     }
 
     @objc private func inventoryDidChange() {
         render(animated: false)
         updateDashboard()
+        updateStatusBanner()
+        notifications.scheduleUpdate()
     }
 
     private func updateDashboard() {
-        dashboardView.provider = InventoryDashboardProvider(items: inventory.items, compartments: fridge.allCompartments,
-                                                            aggregator: DashboardAggregator(), now: Date())
+        // A failed read must not look like an empty fridge: show dashes until data loads.
+        dashboardView.provider = inventory.loadState.isFailed && inventory.items.isEmpty
+            ? PlaceholderDashboardProvider()
+            : InventoryDashboardProvider(items: inventory.items, compartments: fridge.allCompartments,
+                                         aggregator: DashboardAggregator(), now: Date())
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // Home draws its own header; pushed screens (reminder center) use the navigation bar.
+        navigationController?.setNavigationBarHidden(true, animated: animated)
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        if let loadError {
-            self.loadError = nil
-            logger.error("Failed to load fridge: \(String(describing: loadError))")
-            showAlert(title: "無法讀取資料", message: "已暫時使用預設冰箱，變更可能無法儲存。")
+        AppNotificationRouter.shared.attach(self)
+        if layoutRecovery.needsConfirmation && !hasPresentedRecoveryNotice {
+            hasPresentedRecoveryNotice = true
+            presentRecoveryNotice()
         }
+    }
+
+    // MARK: - Status banner (load failure, unplaced food, pending layout repair)
+
+    private enum BannerState: Equatable {
+        case hidden
+        case loadFailed
+        case unplacedFood(Int)
+        case layoutNeedsConfirmation
+    }
+
+    private var bannerState: BannerState {
+        if inventory.loadState.isFailed { return .loadFailed }
+        let unplaced = inventory.itemsWithMissingCompartment.count
+        if unplaced > 0 { return .unplacedFood(unplaced) }
+        if layoutRecovery.needsConfirmation { return .layoutNeedsConfirmation }
+        return .hidden
+    }
+
+    private func updateStatusBanner() {
+        let state = isEditingLayout ? .hidden : bannerState
+        statusBanner.isHidden = state == .hidden
+        let title: String
+        switch state {
+        case .hidden: title = ""
+        case .loadFailed: title = "無法讀取食材資料，輕點重試"
+        case let .unplacedFood(count): title = "有 \(count) 項食材需要重新放置"
+        case .layoutNeedsConfirmation: title = "隔層資料已暫時修復，輕點確認"
+        }
+        var config = statusBanner.configuration
+        config?.title = title
+        statusBanner.configuration = config
+        statusBanner.accessibilityLabel = title
+    }
+
+    private func statusBannerTapped() {
+        switch bannerState {
+        case .hidden: break
+        case .loadFailed: inventory.retryLoading()
+        case .unplacedFood: openSearch(mode: .unplaced)
+        case .layoutNeedsConfirmation: presentRecoveryNotice()
+        }
+    }
+
+    /// Explains a damaged layout and lets the user decide whether to overwrite the original stored bytes.
+    private func presentRecoveryNotice(then onConfirmed: (() -> Void)? = nil) {
+        let unplaced = inventory.itemsWithMissingCompartment.count
+        var message: String
+        switch layoutRecovery {
+        case .none: return
+        case .repaired:
+            message = "儲存的隔層資料有錯誤，已暫時調整隔層大小，所有隔層與食材都保留。"
+        case .replacedWithDefault:
+            message = "儲存的隔層資料無法讀取，目前暫時顯示預設隔層。"
+        }
+        if unplaced > 0 { message += "\n有 \(unplaced) 項食材的原本位置已不存在，請重新放置（不會自動移動）。" }
+        message += "\n原始資料仍保留；確認後才會以目前的隔層覆寫。"
+        let alert = UIAlertController(title: "冰箱隔層資料需要修復", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "稍後再說", style: .cancel))
+        alert.addAction(UIAlertAction(title: "儲存目前隔層", style: .default) { [weak self] _ in
+            guard let self else { return }
+            do {
+                try self.store.saveLayout(self.fridge)
+                self.layoutRecovery = .none
+                self.updateStatusBanner()
+                onConfirmed?()
+            } catch {
+                self.logger.error("Saving recovered layout failed: \(String(describing: error), privacy: .private)")
+                self.showAlert(title: "儲存失敗", message: "隔層資料沒有變更，請再試一次。")
+            }
+        })
+        (presentedViewController ?? self).present(alert, animated: true)
     }
 
     // MARK: - Layout
@@ -119,7 +244,7 @@ final class FridgeHomeViewController: UIViewController {
         titles.axis = .vertical
         titles.spacing = 2
 
-        let buttons = UIStackView(arrangedSubviews: [closeDoorButton, editButton, cancelButton, saveButton])
+        let buttons = UIStackView(arrangedSubviews: [reminderButton, closeDoorButton, editButton, cancelButton, saveButton])
         buttons.spacing = 8
         buttons.setContentCompressionResistancePriority(.required, for: .horizontal)
 
@@ -135,7 +260,7 @@ final class FridgeHomeViewController: UIViewController {
                 container.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8),
                 container.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 container.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                container.bottomAnchor.constraint(equalTo: actionBar.topAnchor, constant: -8),
+                container.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -8),
             ])
         }
         let guide = view.safeAreaLayoutGuide
@@ -152,13 +277,37 @@ final class FridgeHomeViewController: UIViewController {
         actionBar.addArrangedSubview(addFoodButton)
         actionBar.spacing = 12
         actionBar.distribution = .fillEqually
-        actionBar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(actionBar)
+        actionBar.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        searchButton.accessibilityIdentifier = "home.search"
+        addFoodButton.accessibilityIdentifier = "home.addFood"
+
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "exclamationmark.circle")
+        config.imagePadding = 6
+        config.baseForegroundColor = Theme.Color.textPrimary
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var attrs = attrs
+            attrs.font = UIFont.preferredFont(forTextStyle: .footnote)
+            return attrs
+        }
+        statusBanner.configuration = config
+        statusBanner.backgroundColor = Theme.Color.fridgeBody
+        statusBanner.layer.cornerRadius = 10
+        statusBanner.isHidden = true
+        statusBanner.accessibilityIdentifier = "home.statusBanner"
+        statusBanner.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        statusBanner.addAction(UIAction { [weak self] _ in self?.statusBannerTapped() }, for: .touchUpInside)
+
+        footer.axis = .vertical
+        footer.spacing = 8
+        footer.addArrangedSubview(statusBanner)
+        footer.addArrangedSubview(actionBar)
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(footer)
         NSLayoutConstraint.activate([
-            actionBar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: Theme.Metric.gutter),
-            actionBar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -Theme.Metric.gutter),
-            actionBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            actionBar.heightAnchor.constraint(equalToConstant: 44),
+            footer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: Theme.Metric.gutter),
+            footer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -Theme.Metric.gutter),
+            footer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
         ])
     }
 
@@ -260,6 +409,8 @@ final class FridgeHomeViewController: UIViewController {
         fridgeView.onSelectCompartment = { [weak self] id in self?.compartmentTapped(id) }
         fridgeView.summaryProvider = { [weak self] id in self?.inventory.contentSummary(for: id) ?? .empty }
         searchButton.addAction(UIAction { [weak self] _ in self?.openSearch() }, for: .touchUpInside)
+        reminderButton.addAction(UIAction { [weak self] _ in self?.openReminderCenter() }, for: .touchUpInside)
+        dashboardView.onSelectReminder = { [weak self] kind, storage in self?.openReminderCenter(kind: kind, storage: storage) }
         addFoodButton.addAction(UIAction { [weak self] _ in self?.openFoodEditor(.add(compartmentID: nil)) }, for: .touchUpInside)
         closeDoorButton.accessibilityLabel = "關上冰箱"
     }
@@ -275,7 +426,9 @@ final class FridgeHomeViewController: UIViewController {
         cancelButton.isHidden = !isEditingLayout
         saveButton.isHidden = !isEditingLayout
         editBar.isHidden = !isEditingLayout
+        reminderButton.isHidden = isEditingLayout
         actionBar.isHidden = isEditingLayout
+        updateStatusBanner()
         fridgeCenteredWhenBrowsing?.isActive = !isEditingLayout
         fridgeTopWhenEditing?.isActive = isEditingLayout
         if animated && !UIAccessibility.isReduceMotionEnabled {
@@ -367,6 +520,17 @@ final class FridgeHomeViewController: UIViewController {
     }
 
     private func saveTapped() {
+        guard layoutRecovery.needsConfirmation else { return commitLayoutEdits() }
+        // The stored layout was damaged: saving overwrites the original bytes, so ask first.
+        let alert = UIAlertController(title: "覆寫原本的隔層資料？",
+                                      message: "原本儲存的隔層資料已損壞。儲存後會以目前編輯的隔層取代它。",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "覆寫並儲存", style: .destructive) { [weak self] _ in self?.commitLayoutEdits() })
+        (presentedViewController ?? self).present(alert, animated: true)
+    }
+
+    private func commitLayoutEdits() {
         guard let editor else { return }
         do {
             let updated = try editor.commit()
@@ -377,7 +541,9 @@ final class FridgeHomeViewController: UIViewController {
             }
             try store.saveLayout(updated)
             fridge = updated
+            layoutRecovery = .none
             endEditing()
+            notifications.scheduleUpdate() // compartment names appear in notification text
             updateDashboard() // storage types may have changed; food records are never rewritten
         } catch let error as LayoutEditError {
             showStatus(error.message)
@@ -426,8 +592,43 @@ final class FridgeHomeViewController: UIViewController {
                                          from: presenter ?? presentedViewController ?? self)
     }
 
-    private func openSearch() {
-        FoodSearchViewController.present(inventory: inventory, compartments: { [weak self] in self?.fridge.allCompartments ?? [] },
+    /// Pushes the reminder center (door state is untouched; Back returns to the same fridge view).
+    func openReminderCenter(kind: ReminderKindFilter = .all, storage: StorageFilter = .all) {
+        guard !isEditingLayout else { return }
+        if presentedViewController != nil { dismiss(animated: false) }
+        let center = ReminderCenterViewController(inventory: inventory,
+                                                  compartments: { [weak self] in self?.fridge.allCompartments ?? [] },
+                                                  storageFilter: storage, kindFilter: kind)
+        center.onOpenFood = { [weak self, weak center] id in self?.openFood(id, from: center) }
+        center.onOpenSettings = { [weak self, weak center] in self?.openNotificationSettings(from: center) }
+        navigationController?.pushViewController(center, animated: true)
+    }
+
+    /// Opens a food's editor, or explains that it no longer exists (consumed / deleted) instead of crashing.
+    func openFood(_ id: UUID, from presenter: UIViewController? = nil) {
+        let host = presenter ?? navigationController?.topViewController ?? self
+        switch FoodRoute.resolve(foodID: id, inventory: inventory) {
+        case .editor:
+            FoodEditorViewController.present(.edit(foodID: id), inventory: inventory, compartments: fridge.allCompartments,
+                                             from: host.presentedViewController ?? host)
+        case .missing:
+            FoodActions.showError("這項食材已被食用或刪除。", on: host.presentedViewController ?? host)
+        }
+    }
+
+    private func openNotificationSettings(from presenter: UIViewController?) {
+        navigationController?.pushViewController(NotificationSettingsViewController(coordinator: notifications), animated: true)
+    }
+
+    /// Notification tap: opens the food over whatever is on screen without discarding unsaved work;
+    /// a consumed or deleted food gets a safe message instead.
+    func openFood(fromNotification id: UUID) {
+        openFood(id, from: topPresenter)
+    }
+
+    private func openSearch(mode: FoodSearchViewController.Scope = .all) {
+        FoodSearchViewController.present(scope: mode, inventory: inventory,
+                                         compartments: { [weak self] in self?.fridge.allCompartments ?? [] },
                                          from: presentedViewController ?? self)
     }
 
