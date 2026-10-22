@@ -11,6 +11,7 @@ final class FridgeHomeViewController: UIViewController {
                                                       compartments: { [weak self] in self?.fridge.allCompartments ?? [] })
     private weak var foodListSheet: FoodListSheetController?
     private let notificationClient: NotificationClient
+    private let widgetPublisher: WidgetSnapshotPublisher
     /// Keeps pending notifications in sync with the persisted inventory (a delivery mechanism only).
     private lazy var notifications = NotificationCoordinator(
         client: notificationClient, preferencesStore: UserDefaultsNotificationPreferencesStore(),
@@ -69,8 +70,13 @@ final class FridgeHomeViewController: UIViewController {
     private var fridgeCenteredWhenBrowsing: NSLayoutConstraint?
 
     /// Only constructed once storage is confirmed available and the fridge loaded (see `AppBootstrap`).
-    init(session: AppSession, notificationClient: NotificationClient = SystemNotificationClient()) {
+    /// Only persistent storage publishes widget snapshots; temporary in-memory sessions (tests, UI tests)
+    /// never overwrite what the user's widgets show.
+    init(session: AppSession, notificationClient: NotificationClient = SystemNotificationClient(),
+         widgetPublisher: WidgetSnapshotPublisher? = nil) {
         self.notificationClient = notificationClient
+        self.widgetPublisher = widgetPublisher
+            ?? (session.mode == .persistent ? WidgetSnapshotPublisher() : WidgetSnapshotPublisher(file: nil))
         store = session.fridgeStore
         foodStore = session.foodStore
         fridge = session.loadResult.fridge
@@ -102,6 +108,7 @@ final class FridgeHomeViewController: UIViewController {
         center.addObserver(self, selector: #selector(inventoryDidChange), name: UIApplication.didBecomeActiveNotification, object: nil)
         center.addObserver(self, selector: #selector(reminderConfigured), name: .foodReminderConfigured, object: nil)
         notifications.scheduleUpdate()
+        publishWidgetSnapshot()
     }
 
     /// Contextual permission prompt: offered once, right after the user sets an expiry or storage reminder.
@@ -129,7 +136,15 @@ final class FridgeHomeViewController: UIViewController {
         return top
     }
 
+    /// Publishes the widget snapshot only from successfully loaded data (never after a failed read;
+    /// food changes only notify after they were persisted). Runs off the main thread.
+    private func publishWidgetSnapshot() {
+        guard inventory.loadState == .loaded else { return }
+        widgetPublisher.publish(fridge: fridge, items: inventory.items)
+    }
+
     @objc private func inventoryDidChange() {
+        publishWidgetSnapshot()
         render(animated: false)
         updateDashboard()
         updateStatusBanner()
@@ -221,6 +236,7 @@ final class FridgeHomeViewController: UIViewController {
             do {
                 try self.store.saveLayout(self.fridge)
                 self.layoutRecovery = .none
+                self.publishWidgetSnapshot()
                 self.updateStatusBanner()
                 onConfirmed?()
             } catch {
@@ -545,6 +561,7 @@ final class FridgeHomeViewController: UIViewController {
             endEditing()
             notifications.scheduleUpdate() // compartment names appear in notification text
             updateDashboard() // storage types may have changed; food records are never rewritten
+            publishWidgetSnapshot()
         } catch let error as LayoutEditError {
             showStatus(error.message)
         } catch {
@@ -620,10 +637,76 @@ final class FridgeHomeViewController: UIViewController {
         navigationController?.pushViewController(NotificationSettingsViewController(coordinator: notifications), animated: true)
     }
 
-    /// Notification tap: opens the food over whatever is on screen without discarding unsaved work;
-    /// a consumed or deleted food gets a safe message instead.
-    func openFood(fromNotification id: UUID) {
-        openFood(id, from: topPresenter)
+    // MARK: - External routes (widgets, notifications)
+
+    /// Handles a widget link or notification tap. Every parameter is validated against current data;
+    /// anything invalid lands on the fridge home with a short explanation. Unsaved work is never discarded:
+    /// an open food editor or layout edit stays and the user is told to finish it first.
+    func handle(_ route: ExternalRoute) {
+        guard case let .link(link) = route else { return showRouteMessage("無法開啟這個連結，已回到冰箱") }
+        if let fridgeID = link.refrigeratorID, fridgeID != fridge.id {
+            return returnHome { $0.showRouteMessage("找不到這台冰箱，已回到冰箱") }
+        }
+        if isEditingLayout { return showRouteMessage("請先完成或取消隔層編輯") }
+        if let editor = presentedFoodEditor {
+            // Repeated quick-add taps reuse the open add form instead of stacking another one.
+            if case .quickAdd = link.destination, editor.isAddMode { return }
+            return showRouteMessage("請先完成目前的食材編輯")
+        }
+        returnHome { home in
+            switch link.destination {
+            case .home:
+                break
+            case let .quickAdd(compartmentID):
+                home.openQuickAdd(preferredCompartmentID: compartmentID)
+            case let .reminders(storage, kind):
+                home.openReminderCenter(kind: kind, storage: storage)
+            case let .food(id):
+                home.openFood(id)
+            }
+        }
+    }
+
+    /// Food editor anywhere in the presented chain (it may hold unsaved input).
+    private var presentedFoodEditor: FoodEditorViewController? {
+        var current = navigationController?.presentedViewController ?? presentedViewController
+        while let controller = current {
+            if let editor = (controller as? UINavigationController)?.viewControllers.compactMap({ $0 as? FoodEditorViewController }).first {
+                return editor
+            }
+            current = controller.presentedViewController
+        }
+        return nil
+    }
+
+    /// Closes transient sheets (lists, search, settings) and pops to the fridge, then runs `then`.
+    /// A single navigation stack is kept, so repeated links never duplicate screens.
+    private func returnHome(then: @escaping (FridgeHomeViewController) -> Void) {
+        let finish = { [weak self] in
+            guard let self else { return }
+            self.navigationController?.popToRootViewController(animated: false)
+            then(self)
+        }
+        if let presented = navigationController?.presentedViewController ?? presentedViewController {
+            presented.presentingViewController?.dismiss(animated: false, completion: finish) ?? finish()
+        } else {
+            finish()
+        }
+    }
+
+    private func showRouteMessage(_ message: String) {
+        let top = navigationController?.topViewController ?? self
+        // On the fridge screen, stay clear of the 搜尋 / 新增食材 bar.
+        ToastView.show(message, in: top.view, bottomInset: top === self ? 72 : 24)
+    }
+
+    /// Quick add from a widget: the regular add form (favorites, recents, continuous entry included),
+    /// today's date, quantity 1, no expiry or reminder, and the requested or last-used compartment if it still exists.
+    func openQuickAdd(preferredCompartmentID: UUID?) {
+        let valid = Set(fridge.allCompartments.map(\.id))
+        let compartment = preferredCompartmentID.flatMap { valid.contains($0) ? $0 : nil }
+            ?? inventory.lastUsedCompartmentID(validIDs: valid)
+        openFoodEditor(.add(compartmentID: compartment))
     }
 
     private func openSearch(mode: FoodSearchViewController.Scope = .all) {

@@ -84,22 +84,6 @@ enum CompartmentType: String, Codable, CaseIterable {
     }
 }
 
-/// How the user classifies a compartment of their physical fridge. The app never controls real temperature,
-/// and this value never influences where a compartment sits — only the user's order does.
-enum StorageType: String, Codable, CaseIterable {
-    case refrigerated
-    case frozen
-    case unspecified
-
-    var displayName: String {
-        switch self {
-        case .refrigerated: return "冷藏"
-        case .frozen: return "冷凍"
-        case .unspecified: return "未分類"
-        }
-    }
-}
-
 /// A rectangle in unit space (0...1 on both axes), relative to some parent rectangle.
 struct NormalizedRect: Codable, Equatable {
     var x: Double

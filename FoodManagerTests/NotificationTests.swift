@@ -242,3 +242,41 @@ final class NotificationTests: XCTestCase {
         XCTAssertEqual(UserDefaultsNotificationPreferencesStore(defaults: UserDefaults(suiteName: suite)!).load(), custom)
     }
 }
+
+/// Regression: bursts of `scheduleUpdate()` must never run reschedules concurrently.
+@MainActor
+final class NotificationSerializationTests: XCTestCase {
+    final class OverlapClient: NotificationClient {
+        private let lock = NSLock()
+        private var active = 0
+        private(set) var maxActive = 0
+        private(set) var runs = 0
+
+        private func enter() { lock.lock(); active += 1; maxActive = max(maxActive, active); runs += 1; lock.unlock() }
+        private func leave() { lock.lock(); active -= 1; lock.unlock() }
+
+        func authorizationStatus() async -> NotificationAuthorization { .authorized }
+        func requestAuthorization() async throws -> Bool { true }
+        func pendingIdentifiers() async -> [String] {
+            enter()
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            leave()
+            return []
+        }
+        func deliveredIdentifiers() async -> [String] { [] }
+        func add(_ notification: PlannedNotification) async throws {}
+        func removePending(identifiers: [String]) {}
+        func removeDelivered(identifiers: [String]) {}
+    }
+
+    func testBurstOfUpdatesNeverOverlapsAndCollapses() async {
+        let client = OverlapClient()
+        let coordinator = NotificationCoordinator(client: client, preferencesStore: InMemoryPreferencesStore(),
+                                                  snapshot: { ([], []) })
+        for _ in 0..<20 { coordinator.scheduleUpdate() }
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertEqual(client.maxActive, 1, "reschedules are serialized")
+        XCTAssertLessThan(client.runs, 20, "superseded updates are skipped")
+        XCTAssertGreaterThanOrEqual(client.runs, 1)
+    }
+}

@@ -277,6 +277,14 @@ final class FoodInventoryService {
         return record
     }
 
+    /// Compartment of the most recently added food that still exists (quick add preselection).
+    func lastUsedCompartmentID(validIDs: Set<UUID>) -> UUID? {
+        let history = (try? store.consumedItems(fridgeID: fridgeID)) ?? []
+        return (items + history)
+            .sorted { ($0.createdAt, $0.id.uuidString) > ($1.createdAt, $1.id.uuidString) }
+            .first { validIDs.contains($0.compartmentID) }?.compartmentID
+    }
+
     /// Recent distinct foods from active and historical records (for fast entry).
     func recentFoodSuggestions(limit: Int = RecentFoodSuggestions.defaultLimit) -> [FoodTemplate] {
         let history = (try? store.consumedItems(fridgeID: fridgeID)) ?? []

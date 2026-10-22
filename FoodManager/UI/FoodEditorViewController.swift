@@ -89,6 +89,8 @@ final class FoodEditorViewController: UIViewController {
         populate()
     }
 
+    var isAddMode: Bool { !isEditMode }
+
     private var isEditMode: Bool {
         if case .edit = mode { return true } else { return false }
     }

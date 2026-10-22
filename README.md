@@ -41,11 +41,14 @@ xcodebuild -project FoodManager.xcodeproj -scheme FoodManager -destination 'plat
 
 | 資料夾 | 內容 |
 |---|---|
-| `App/` | 啟動流程（`SceneDelegate`）、通知協調（`NotificationCoordinator`）、通知點擊導向（`AppNotificationRouter`） |
+| `App/` | 啟動流程（`SceneDelegate`）、通知協調（`NotificationCoordinator`）、通知與小工具連結導向（`AppNotificationRouter`）、小工具快照發佈（`WidgetSnapshotPublisher`） |
 | `Domain/` | 純邏輯：冰箱／隔層／食材模型、分類、日期與提醒計算、Dashboard 統計、提醒中心、通知排程規則 |
 | `Layout/` | 隔層版面引擎、編輯交易（工作副本）、損壞版面修復 |
 | `Persistence/` | SwiftData 模型與存取（`FridgeStore`、`FoodStore`）、儲存可用性（`AppPersistence`） |
 | `UI/` | UIKit 畫面與元件 |
+| `Shared/` | App 與小工具共用：提醒規則、日期與文字格式、小工具快照、Deep Link、共用圖片（分類插圖、冰箱圖） |
+| `FoodManagerWidgets/` | WidgetKit 小工具（只有這裡使用 SwiftUI） |
+| `Config/` | Info.plist 補充（URL scheme）、App Group entitlements |
 
 重點原則：
 
@@ -76,10 +79,28 @@ xcodebuild -project FoodManager.xcodeproj -scheme FoodManager -destination 'plat
   - 每項食材每種類型一個固定識別碼（不會重複），最多同時排 60 則（iOS 上限 64），以最近的優先。
   - 新增、編輯、移動、已食用、刪除、修改設定、回到 App 時都會重新同步；點通知會直接開啟該食材，若已食用或刪除則顯示提示。
 
+## 小工具（WidgetKit）
+
+- **我的冰箱**：小（需要注意的總數，點擊開啟提醒中心）、中（冷藏／冷凍提醒數、最緊急的一項、新增按鈕）、大（依已過期／即將到期／保存提醒分組，最多 5 項）、鎖定畫面圓形與長方形。
+- **快速新增**：小與鎖定畫面圓形，點擊直接開啟 App 原本的新增食材畫面（自動帶入上次使用、仍存在的隔層；數量 1、今天、不帶到期日與保存提醒）。
+- 小尺寸小工具只能有一個點擊目標（iOS 17 限制），所以新增功能放在獨立的「快速新增」小工具，而不是做一個假的按鈕。
+- **資料**：App 只在資料成功儲存或讀取後，於背景執行緒把精簡快照（`widget-snapshot.json`，原子寫入）寫到 App Group `group.FoodManager.HowCode`；只包含會產生提醒的食材的名稱、位置、日期等必要欄位，不含完整資料庫。小工具只讀這個檔案，絕不寫入 App 的資料庫。內容有變才請 WidgetKit 重新整理。
+- 小工具的時間軸每天午夜各有一筆，用與 App 相同的規則重新計算，所以即使一週沒打開 App，「即將到期／已過期」也會隨日期更新（實際刷新時間由 WidgetKit 決定）。
+- 測試與 `--uitesting` 使用的暫存資料庫不會寫入小工具快照。
+
+### Deep Link
+
+`foodmanager://home`、`foodmanager://add[?compartment=]`、`foodmanager://reminders[?storage=all|refrigerated|frozen&kind=all|expiringSoon|expired|storage]`、`foodmanager://food?id=`，皆可加 `fridge=`。格式錯誤、找不到的冰箱或食材會回到冰箱首頁並顯示提示；正在編輯食材或隔層時不會被打斷。
+
+### 實機安裝前
+
+模擬器可直接執行。裝到實機前需在 Xcode 的 Signing & Capabilities 選擇你的 Team，並讓 App 與 `FoodManager.HowCode.Widgets` 兩個 target 都啟用同一個 App Group（`group.FoodManager.HowCode`），Xcode 會在你的開發者帳號註冊它。
+
 ## 圖片素材
 
-- `Assets.xcassets/fridge_closed`、`fridge_open_flat`：冰箱插圖（開門圖的可編輯區位置寫在 `FridgeTemplate.swift`，更換圖片時需重新量測）。
-- `Assets.xcassets/FoodCategories/category_*`：20 個分類插圖，透明背景正方形 PNG；缺圖時自動顯示文字佔位圖。
+- `FoodManager/Assets.xcassets/fridge_open_flat`：開門冰箱插圖（可編輯區位置寫在 `FridgeTemplate.swift`，更換圖片時需重新量測）。
+- `Shared/SharedAssets.xcassets/fridge_closed`：關門冰箱插圖（App 與小工具共用）。
+- `Shared/SharedAssets.xcassets/FoodCategories/category_*`：20 個分類插圖（App 與小工具共用），透明背景正方形 PNG；缺圖時 App 顯示文字佔位圖。
 
 ## 已知限制
 

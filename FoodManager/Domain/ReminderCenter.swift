@@ -1,31 +1,5 @@
 import Foundation
 
-/// Which reminder type the reminder center shows.
-enum ReminderKindFilter: CaseIterable, Equatable {
-    case all
-    case expiringSoon
-    case expired
-    case storedTooLong
-
-    var title: String {
-        switch self {
-        case .all: return "全部提醒"
-        case .expiringSoon: return "即將到期"
-        case .expired: return "已過期"
-        case .storedTooLong: return "保存提醒"
-        }
-    }
-
-    func matches(_ kinds: Set<FoodReminderKind>) -> Bool {
-        switch self {
-        case .all: return !kinds.isEmpty
-        case .expiringSoon: return kinds.contains(.expiringSoon)
-        case .expired: return kinds.contains(.expired)
-        case .storedTooLong: return kinds.contains(.storedTooLong)
-        }
-    }
-}
-
 /// One food needing attention. A food that is both expired and past its storage reminder is ONE entry
 /// listing both statuses, never two rows.
 struct ReminderEntry: Equatable {
@@ -96,13 +70,8 @@ struct ReminderCenterBuilder {
     }
 
     private static func urgencyKey(_ entry: ReminderEntry) -> (rank: Int, value: Int) {
-        switch entry.expiration {
-        case let .expired(daysAgo): return (0, -daysAgo)
-        case let .expiringSoon(daysLeft): return (1, daysLeft)
-        case .fresh, .none:
-            let overdue = entry.daysStored - (entry.item.storageReminderDays ?? 0)
-            return (2, -overdue)
-        }
+        ReminderUrgency.key(expiration: entry.expiration, daysStored: entry.daysStored,
+                            storageReminderDays: entry.item.storageReminderDays)
     }
 }
 

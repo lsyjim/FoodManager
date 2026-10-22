@@ -271,7 +271,8 @@ final class HistoryCell: UITableViewCell {
 
 /// Small transient confirmation message at the bottom of a view.
 enum ToastView {
-    static func show(_ message: String, in host: UIView) {
+    /// `bottomInset` lifts the message above bottom controls (e.g. the fridge's action bar).
+    static func show(_ message: String, in host: UIView, bottomInset: CGFloat = 24) {
         let label = PaddedLabel()
         label.text = message
         label.font = UIFont.preferredFont(forTextStyle: .footnote)
@@ -286,7 +287,7 @@ enum ToastView {
         host.addSubview(label)
         NSLayoutConstraint.activate([
             label.centerXAnchor.constraint(equalTo: host.centerXAnchor),
-            label.bottomAnchor.constraint(equalTo: host.safeAreaLayoutGuide.bottomAnchor, constant: -24),
+            label.bottomAnchor.constraint(equalTo: host.safeAreaLayoutGuide.bottomAnchor, constant: -bottomInset),
             label.widthAnchor.constraint(lessThanOrEqualTo: host.widthAnchor, constant: -48),
         ])
         UIAccessibility.post(notification: .announcement, argument: message)

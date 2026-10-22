@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		F0D000000000000000000601 /* FoodManagerWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F0D000000000000000000014 /* FoodManagerWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		F0D000000000000000000301 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -21,12 +25,34 @@
 			remoteGlobalIDString = F0D000000000000000000101;
 			remoteInfo = FoodManager;
 		};
+		F0D000000000000000000303 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F0D000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F0D000000000000000000104;
+			remoteInfo = FoodManagerWidgets;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		F0D000000000000000000602 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				F0D000000000000000000601 /* FoodManagerWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		F0D000000000000000000011 /* FoodManager.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FoodManager.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F0D000000000000000000012 /* FoodManagerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FoodManagerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F0D000000000000000000013 /* FoodManagerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FoodManagerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F0D000000000000000000014 /* FoodManagerWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FoodManagerWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -43,6 +69,16 @@
 		F0D000000000000000000023 /* FoodManagerUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = FoodManagerUITests;
+			sourceTree = "<group>";
+		};
+		F0D000000000000000000024 /* FoodManagerWidgets */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = FoodManagerWidgets;
+			sourceTree = "<group>";
+		};
+		F0D000000000000000000025 /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -69,6 +105,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F0D000000000000000000231 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -78,6 +121,8 @@
 				F0D000000000000000000021 /* FoodManager */,
 				F0D000000000000000000022 /* FoodManagerTests */,
 				F0D000000000000000000023 /* FoodManagerUITests */,
+				F0D000000000000000000024 /* FoodManagerWidgets */,
+				F0D000000000000000000025 /* Shared */,
 				F0D000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -88,6 +133,7 @@
 				F0D000000000000000000011 /* FoodManager.app */,
 				F0D000000000000000000012 /* FoodManagerTests.xctest */,
 				F0D000000000000000000013 /* FoodManagerUITests.xctest */,
+				F0D000000000000000000014 /* FoodManagerWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -102,13 +148,16 @@
 				F0D000000000000000000202 /* Sources */,
 				F0D000000000000000000201 /* Frameworks */,
 				F0D000000000000000000203 /* Resources */,
+				F0D000000000000000000602 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				F0D000000000000000000313 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				F0D000000000000000000021 /* FoodManager */,
+				F0D000000000000000000025 /* Shared */,
 			);
 			name = FoodManager;
 			packageProductDependencies = (
@@ -163,6 +212,29 @@
 			productReference = F0D000000000000000000013 /* FoodManagerUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		F0D000000000000000000104 /* FoodManagerWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F0D000000000000000000504 /* Build configuration list for PBXNativeTarget "FoodManagerWidgets" */;
+			buildPhases = (
+				F0D000000000000000000232 /* Sources */,
+				F0D000000000000000000231 /* Frameworks */,
+				F0D000000000000000000233 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				F0D000000000000000000024 /* FoodManagerWidgets */,
+				F0D000000000000000000025 /* Shared */,
+			);
+			name = FoodManagerWidgets;
+			packageProductDependencies = (
+			);
+			productName = FoodManagerWidgets;
+			productReference = F0D000000000000000000014 /* FoodManagerWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -184,6 +256,9 @@
 						CreatedOnToolsVersion = 26.3;
 						TestTargetID = F0D000000000000000000101;
 					};
+					F0D000000000000000000104 = {
+						CreatedOnToolsVersion = 26.3;
+					};
 				};
 			};
 			buildConfigurationList = F0D000000000000000000500 /* Build configuration list for PBXProject "FoodManager" */;
@@ -204,6 +279,7 @@
 				F0D000000000000000000101 /* FoodManager */,
 				F0D000000000000000000102 /* FoodManagerTests */,
 				F0D000000000000000000103 /* FoodManagerUITests */,
+				F0D000000000000000000104 /* FoodManagerWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -224,6 +300,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		F0D000000000000000000223 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F0D000000000000000000233 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -254,6 +337,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F0D000000000000000000232 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -266,6 +356,11 @@
 			isa = PBXTargetDependency;
 			target = F0D000000000000000000101 /* FoodManager */;
 			targetProxy = F0D000000000000000000302 /* PBXContainerItemProxy */;
+		};
+		F0D000000000000000000313 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F0D000000000000000000104 /* FoodManagerWidgets */;
+			targetProxy = F0D000000000000000000303 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -324,9 +419,11 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Config/FoodManager.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/FoodManager-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "冰箱管理員";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -350,9 +447,11 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Config/FoodManager.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/FoodManager-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "冰箱管理員";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -437,6 +536,56 @@
 			};
 			name = Release;
 		};
+		F0D000000000000000000441 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Config/FoodManagerWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/FoodManagerWidgets-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "冰箱管理員";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = FoodManager.HowCode.Widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		F0D000000000000000000442 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Config/FoodManagerWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/FoodManagerWidgets-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "冰箱管理員";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = FoodManager.HowCode.Widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -472,6 +621,15 @@
 			buildConfigurations = (
 				F0D000000000000000000431 /* Debug */,
 				F0D000000000000000000432 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F0D000000000000000000504 /* Build configuration list for PBXNativeTarget "FoodManagerWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F0D000000000000000000441 /* Debug */,
+				F0D000000000000000000442 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

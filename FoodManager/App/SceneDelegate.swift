@@ -14,6 +14,14 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.window = window
         start()
         window.makeKeyAndVisible()
+        // Cold launch from a widget: delivered once the fridge screen is ready.
+        if let url = connectionOptions.urlContexts.first?.url { AppNotificationRouter.shared.handle(url: url) }
+    }
+
+    /// Widget tap while running or restored from the background.
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        guard let url = URLContexts.first?.url else { return }
+        AppNotificationRouter.shared.handle(url: url)
     }
 
     /// (Re)attempts to open storage. Called at launch and by the error screen's retry button.

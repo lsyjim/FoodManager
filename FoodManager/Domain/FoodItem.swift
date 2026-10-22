@@ -23,6 +23,8 @@ struct FoodItem: Equatable, Identifiable {
     var isActive: Bool { consumedAt == nil }
 }
 
+extension FoodItem: ReminderSubject {}
+
 /// A stable food category. `id` is persisted on every FoodItem, so never change existing IDs.
 struct FoodCategory: Equatable, Identifiable {
     let id: String

@@ -99,10 +99,16 @@ final class NotificationCoordinator {
         return await client.authorizationStatus()
     }
 
-    /// Coalesces bursts of changes into one reschedule.
+    /// Coalesces bursts of changes into one reschedule. Reschedules never overlap: each waits for the
+    /// previous one (cancellation alone doesn't stop a running task), and superseded ones are skipped.
     func scheduleUpdate() {
-        pendingTask?.cancel()
-        pendingTask = Task { [weak self] in await self?.reschedule() }
+        let previous = pendingTask
+        previous?.cancel()
+        pendingTask = Task { [weak self] in
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            await self?.reschedule()
+        }
     }
 
     /// Replaces this app's pending food notifications with the current plan. Returns what is now scheduled.
