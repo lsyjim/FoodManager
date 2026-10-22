@@ -260,7 +260,7 @@ final class FridgeHomeViewController: UIViewController {
         titles.axis = .vertical
         titles.spacing = 2
 
-        let buttons = UIStackView(arrangedSubviews: [reminderButton, closeDoorButton, editButton, cancelButton, saveButton])
+        let buttons = UIStackView(arrangedSubviews: [reminderButton, editButton, cancelButton, saveButton])
         buttons.spacing = 8
         buttons.setContentCompressionResistancePriority(.required, for: .horizontal)
 
@@ -385,7 +385,7 @@ final class FridgeHomeViewController: UIViewController {
         editBar.spacing = 12
         editBar.alignment = .center
 
-        for subview in [editBar, fridgeView] as [UIView] {
+        for subview in [editBar, fridgeView, closeDoorButton] as [UIView] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             openContainer.addSubview(subview)
         }
@@ -405,6 +405,13 @@ final class FridgeHomeViewController: UIViewController {
             fridgeView.widthAnchor.constraint(lessThanOrEqualTo: c.widthAnchor, constant: -2 * inset),
             fridgeView.bottomAnchor.constraint(lessThanOrEqualTo: c.bottomAnchor, constant: -8),
             preferredWidth,
+
+            // 關門 sits right under the fridge, where the door is (hidden while editing the layout).
+            closeDoorButton.topAnchor.constraint(equalTo: fridgeView.bottomAnchor, constant: 20),
+            closeDoorButton.centerXAnchor.constraint(equalTo: c.centerXAnchor),
+            closeDoorButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
+            closeDoorButton.heightAnchor.constraint(greaterThanOrEqualToConstant: Theme.Metric.minTouchTarget),
+            closeDoorButton.bottomAnchor.constraint(lessThanOrEqualTo: c.bottomAnchor, constant: -8),
         ])
         // Editing pins the fridge just under the edit bar so the compact sheet covers as little as possible.
         fridgeTopWhenEditing = fridgeView.topAnchor.constraint(equalTo: editBar.bottomAnchor, constant: 12)

@@ -422,6 +422,7 @@
 				CODE_SIGN_ENTITLEMENTS = Config/FoodManager.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9U53ELUVJM;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Config/FoodManager-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "冰箱管理員";
@@ -450,6 +451,7 @@
 				CODE_SIGN_ENTITLEMENTS = Config/FoodManager.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9U53ELUVJM;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Config/FoodManager-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "冰箱管理員";
@@ -543,6 +545,7 @@
 				CODE_SIGN_ENTITLEMENTS = Config/FoodManagerWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9U53ELUVJM;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Config/FoodManagerWidgets-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "冰箱管理員";
@@ -568,6 +571,7 @@
 				CODE_SIGN_ENTITLEMENTS = Config/FoodManagerWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9U53ELUVJM;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Config/FoodManagerWidgets-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "冰箱管理員";
