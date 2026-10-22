@@ -6,6 +6,7 @@ final class SettingsViewController: UITableViewController {
     private enum Row: Equatable {
         case upgrade, restore, premiumUnlocked, adFree
         case notifications, fridges
+        case exportBackup, importBackup
         case privacyOptions
         #if DEBUG
         case devPremium, devAds, devResetConsent, devAdStatus
@@ -22,13 +23,15 @@ final class SettingsViewController: UITableViewController {
     private let ads: AdsCoordinator?
     private let notifications: NotificationCoordinator
     private let makeFridgeManagement: (() -> UIViewController?)?
+    private let backup: BackupFlow?
     private var sections: [Section] = []
 
     /// `entitlements` / `ads` are nil while monetization is suspended (`MonetizationPolicy`): every paid
     /// entry point (完整版, 恢復購買, 廣告與隱私, developer purchase switches) is then hidden.
     init(entitlements: EntitlementService?, ads: AdsCoordinator?, notifications: NotificationCoordinator,
-         makeFridgeManagement: (() -> UIViewController?)? = nil) {
+         makeFridgeManagement: (() -> UIViewController?)? = nil, backup: BackupFlow? = nil) {
         self.makeFridgeManagement = makeFridgeManagement
+        self.backup = backup
         self.entitlements = entitlements
         self.ads = ads
         self.notifications = notifications
@@ -65,6 +68,11 @@ final class SettingsViewController: UITableViewController {
             }
         }
         sections.append(Section(title: "一般", footer: nil, rows: makeFridgeManagement == nil ? [.notifications] : [.fridges, .notifications]))
+        if backup != nil {
+            sections.append(Section(title: "資料管理",
+                                    footer: "備份檔是一般可讀的 JSON 文字檔，沒有加密，只會存到你選擇的位置（例如「檔案」或 iCloud 雲碟），App 不會上傳。匯入備份會取代目前所有資料。",
+                                    rows: [.exportBackup, .importBackup]))
+        }
         if let ads, entitlements?.isPremium == false, ads.privacyOptionsRequired {
             sections.append(Section(title: "廣告與隱私", footer: "管理廣告個人化與資料使用的同意設定。", rows: [.privacyOptions]))
         }
@@ -118,6 +126,15 @@ final class SettingsViewController: UITableViewController {
             content.text = "通知設定"
             content.image = UIImage(systemName: "bell")
             cell.accessoryType = .disclosureIndicator
+        case .exportBackup:
+            content.text = "匯出備份"
+            content.image = UIImage(systemName: "square.and.arrow.up")
+            cell.accessibilityIdentifier = "settings.exportBackup"
+        case .importBackup:
+            content.text = "匯入備份"
+            content.image = UIImage(systemName: "square.and.arrow.down")
+            cell.accessoryType = .disclosureIndicator
+            cell.accessibilityIdentifier = "settings.importBackup"
         case .privacyOptions:
             content.text = "廣告與隱私設定"
             content.image = UIImage(systemName: "hand.raised")
@@ -174,6 +191,10 @@ final class SettingsViewController: UITableViewController {
             if let management = makeFridgeManagement?() { navigationController?.pushViewController(management, animated: true) }
         case .notifications:
             navigationController?.pushViewController(NotificationSettingsViewController(coordinator: notifications), animated: true)
+        case .exportBackup:
+            backup?.export(from: self, sourceView: tableView.cellForRow(at: indexPath))
+        case .importBackup:
+            backup?.pickBackup(from: self)
         case .privacyOptions:
             guard let ads else { return }
             Task { @MainActor in await ads.presentPrivacyOptions(from: self) }

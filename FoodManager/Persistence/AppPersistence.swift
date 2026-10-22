@@ -63,12 +63,22 @@ struct AppSession {
     let loadResult: FridgeLoadResult
     let mode: PersistenceMode
     let directory: FridgeDirectory
+    /// The one open container (a restore rebuilds the session from it; a second container is never opened).
+    let container: ModelContainer
+    let selection: FridgeSelectionStore
 
     /// Same storage, another fridge (re-reads stored fridges so door states and layouts are current).
     func selecting(_ fridgeID: UUID) throws -> AppSession {
         try directory.select(fridgeID)
         return AppSession(fridgeStore: fridgeStore, foodStore: foodStore, loadResult: directory.selected,
-                          mode: mode, directory: directory)
+                          mode: mode, directory: directory, container: container, selection: selection)
+    }
+
+    /// Backup service over this session's storage and preferences.
+    func makeBackupService(defaults: UserDefaults = .standard) -> BackupService {
+        BackupService(inventory: SwiftDataInventoryBackupStore(container: container),
+                      preferences: UserDefaultsPreferencesBackupStore(defaults: defaults, selection: selection),
+                      recoveryDirectory: mode == .persistent ? BackupService.defaultRecoveryDirectory : nil)
     }
 }
 
@@ -79,19 +89,24 @@ enum AppBootstrap {
         case let .unavailable(error):
             return .failure(error)
         case let .available(container, mode):
-            let fridgeStore = SwiftDataFridgeStore(container: container)
-            do {
-                let foodStore = SwiftDataFoodStore(container: container)
-                // Tests and UI tests keep their selection in memory, never in the user's preferences.
-                let selection: FridgeSelectionStore = mode == .persistent ? UserDefaultsFridgeSelectionStore() : InMemoryFridgeSelectionStore()
-                let directory = try FridgeDirectory(fridgeStore: fridgeStore, foodStore: foodStore, selection: selection)
-                return .success(AppSession(fridgeStore: fridgeStore, foodStore: foodStore,
-                                           loadResult: directory.selected, mode: mode, directory: directory))
-            } catch {
-                Logger(subsystem: "FoodManager.HowCode", category: "Persistence")
-                    .error("Fridge load failed: \(String(describing: error), privacy: .private)")
-                return .failure(error)
-            }
+            // Tests and UI tests keep their selection in memory, never in the user's preferences.
+            let selection: FridgeSelectionStore = mode == .persistent ? UserDefaultsFridgeSelectionStore() : InMemoryFridgeSelectionStore()
+            return makeSession(container: container, mode: mode, selection: selection)
+        }
+    }
+
+    /// Fresh stores (fresh contexts, nothing cached) over an already open container. Used at launch and after a restore.
+    static func makeSession(container: ModelContainer, mode: PersistenceMode, selection: FridgeSelectionStore) -> Result<AppSession, Error> {
+        let fridgeStore = SwiftDataFridgeStore(container: container)
+        let foodStore = SwiftDataFoodStore(container: container)
+        do {
+            let directory = try FridgeDirectory(fridgeStore: fridgeStore, foodStore: foodStore, selection: selection)
+            return .success(AppSession(fridgeStore: fridgeStore, foodStore: foodStore, loadResult: directory.selected,
+                                       mode: mode, directory: directory, container: container, selection: selection))
+        } catch {
+            Logger(subsystem: "FoodManager.HowCode", category: "Persistence")
+                .error("Fridge load failed: \(String(describing: error), privacy: .private)")
+            return .failure(error)
         }
     }
 }

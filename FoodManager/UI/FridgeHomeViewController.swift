@@ -10,6 +10,10 @@ final class FridgeHomeViewController: UIViewController {
     let directory: FridgeDirectory
     /// Rebuilds the app for another fridge, then delivers `route` there (set by the scene delegate).
     var onSwitchFridge: ((UUID, ExternalRoute?) -> Void)?
+    /// Rebuilds the app from storage after a restore touched the database (set by the scene delegate).
+    /// The argument is nil on success, else the failure message to show.
+    var onDataRestored: ((String?) -> Void)?
+    private let makeBackupService: () -> BackupService
     /// Food rules always validate against the *persisted* layout, never an unsaved edit.
     private lazy var inventory = FoodInventoryService(store: foodStore, fridgeID: fridge.id,
                                                       compartments: { [weak self] in self?.fridge.allCompartments ?? [] })
@@ -108,6 +112,7 @@ final class FridgeHomeViewController: UIViewController {
         store = session.fridgeStore
         directory = session.directory
         foodStore = session.foodStore
+        makeBackupService = { session.makeBackupService() }
         fridge = session.loadResult.fridge
         layoutRecovery = session.loadResult.recovery
         self.template = FridgeTemplateCatalog.template(id: fridge.templateID)
@@ -167,9 +172,24 @@ final class FridgeHomeViewController: UIViewController {
 
     /// Publishes the widget snapshot only from successfully loaded data (never after a failed read;
     /// food changes only notify after they were persisted). Runs off the main thread.
-    private func publishWidgetSnapshot() {
-        guard inventory.loadState == .loaded, let data = allFridgesData() else { return }
-        widgetPublisher.publish(fridges: data.fridges, items: data.items, selectedFridgeID: fridge.id)
+    private func publishWidgetSnapshot(completion: ((Bool) -> Void)? = nil) {
+        guard inventory.loadState == .loaded, let data = allFridgesData() else {
+            completion?(false)
+            return
+        }
+        widgetPublisher.publish(fridges: data.fridges, items: data.items, selectedFridgeID: fridge.id, completion: completion)
+    }
+
+    /// After a restore: reschedules notifications and regenerates widget snapshots from the restored data.
+    /// Reports what couldn't be refreshed (the restored data itself is already saved).
+    func syncAfterRestore() async -> [String] {
+        var problems: [String] = []
+        if await !notifications.syncNow() { problems.append("通知") }
+        let widgetsUpdated = await withCheckedContinuation { continuation in
+            publishWidgetSnapshot { continuation.resume(returning: $0) }
+        }
+        if !widgetsUpdated { problems.append("小工具") }
+        return problems
     }
 
     /// Every fridge with its active food: this fridge from memory (freshest), the others from storage.
@@ -796,8 +816,10 @@ final class FridgeHomeViewController: UIViewController {
 
     func openSettings() {
         guard !isEditingLayout else { return }
+        let backup = BackupFlow(service: makeBackupService()) { [weak self] failure in self?.onDataRestored?(failure) }
         let settings = SettingsViewController(entitlements: entitlements, ads: ads, notifications: notifications,
-                                              makeFridgeManagement: { [weak self] in self?.makeFridgeManagement() })
+                                              makeFridgeManagement: { [weak self] in self?.makeFridgeManagement() },
+                                              backup: backup)
         navigationController?.pushViewController(settings, animated: true)
     }
 

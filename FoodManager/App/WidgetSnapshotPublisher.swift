@@ -64,8 +64,14 @@ final class WidgetSnapshotPublisher {
     }
 
     /// Publishes every fridge (food is split by `fridgeID`, so nothing shows under the wrong fridge).
-    func publish(fridges: [Fridge], items: [FoodItem], selectedFridgeID: UUID, now: Date = Date()) {
-        guard let file, !fridges.isEmpty else { return }
+    /// `completion` (main queue) reports false only if writing failed; with no file (widgets disabled for
+    /// this session, e.g. tests) there is nothing to update and it reports true.
+    func publish(fridges: [Fridge], items: [FoodItem], selectedFridgeID: UUID, now: Date = Date(),
+                 completion: ((Bool) -> Void)? = nil) {
+        guard let file, !fridges.isEmpty else {
+            completion.map { done in DispatchQueue.main.async { done(true) } }
+            return
+        }
         queue.async { [self] in
             let bundle = WidgetSnapshotBundle(
                 bundleVersion: WidgetSnapshotBundle.currentVersion, generatedAt: now, selectedFridgeID: selectedFridgeID,
@@ -79,12 +85,19 @@ final class WidgetSnapshotPublisher {
                 keyed.generatedAt = day
                 for index in keyed.fridges.indices { keyed.fridges[index].generatedAt = day }
                 let key = try WidgetSnapshotFile.encode(keyed)
-                guard key != lastContentKey || file.read() == nil else { return }
+                guard key != lastContentKey || file.read() == nil else {
+                    completion.map { done in DispatchQueue.main.async { done(true) } }
+                    return
+                }
                 try file.write(WidgetSnapshotFile.encode(bundle))
                 lastContentKey = key
-                DispatchQueue.main.async { self.reloader.reloadAll() }
+                DispatchQueue.main.async {
+                    self.reloader.reloadAll()
+                    completion?(true)
+                }
             } catch {
                 logger.error("Writing widget snapshot failed: \(String(describing: error), privacy: .private)")
+                completion.map { done in DispatchQueue.main.async { done(false) } }
             }
         }
     }

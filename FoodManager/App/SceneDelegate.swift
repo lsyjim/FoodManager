@@ -53,6 +53,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func show(_ session: AppSession, animated: Bool = false) {
         let home = FridgeHomeViewController(session: session, entitlements: monetization.entitlementsForUI, ads: monetization.ads)
         home.onSwitchFridge = { [weak self] id, route in self?.switchFridge(to: id, from: session, then: route) }
+        home.onDataRestored = { [weak self] failure in self?.reloadAfterRestore(from: session, failure: failure) }
         self.home = home
         let navigation = UINavigationController(rootViewController: home)
         navigation.navigationBar.tintColor = Theme.Color.stroke
@@ -70,6 +71,33 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             if let route { AppNotificationRouter.shared.route(route) }
         } catch {
             home?.showMessage("無法切換冰箱，請再試一次。")
+        }
+    }
+
+    /// A restore replaced the stored data: rebuild everything (fresh contexts on the same container, never a
+    /// second one), so no screen keeps showing old data. Then reschedule notifications and refresh widgets.
+    private func reloadAfterRestore(from session: AppSession, failure: String?) {
+        switch AppBootstrap.makeSession(container: session.container, mode: session.mode, selection: session.selection) {
+        case let .success(restored):
+            show(restored, animated: true)
+            guard let home else { return }
+            home.loadViewIfNeeded()
+            Task { @MainActor [weak home] in
+                let problems = await home?.syncAfterRestore() ?? []
+                guard let home else { return }
+                if let failure {
+                    let alert = UIAlertController(title: "沒有還原", message: failure, preferredStyle: .alert)
+                    alert.addAction(UIAlertAction(title: "好", style: .default))
+                    home.present(alert, animated: true)
+                } else if problems.isEmpty {
+                    home.showMessage("已還原備份")
+                } else {
+                    home.showMessage("已還原備份，但\(problems.joined(separator: "與"))暫時沒有更新，稍後會自動再試")
+                }
+            }
+        case .failure:
+            // The restored data is saved; only this screen couldn't be rebuilt.
+            home?.showMessage("資料已還原，但畫面無法重新載入，請關閉並重新開啟 App")
         }
     }
 

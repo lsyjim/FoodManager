@@ -75,6 +75,8 @@ final class NotificationCoordinator {
     private let planner: NotificationPlanner
     private let now: () -> Date
     private var pendingTask: Task<Void, Never>?
+    /// Whether the last reschedule read the data and scheduled every planned notification.
+    private(set) var lastSyncSucceeded = true
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "Notifications")
 
     init(client: NotificationClient, preferencesStore: NotificationPreferencesStore, planner: NotificationPlanner = NotificationPlanner(),
@@ -113,10 +115,21 @@ final class NotificationCoordinator {
         }
     }
 
+    /// Runs a reschedule now (after any queued one) and reports whether it fully succeeded.
+    func syncNow() async -> Bool {
+        scheduleUpdate()
+        await pendingTask?.value
+        return lastSyncSucceeded
+    }
+
     /// Replaces this app's pending food notifications with the current plan. Returns what is now scheduled.
     @discardableResult
     func reschedule() async -> [PlannedNotification] {
-        guard let (items, compartments) = snapshot() else { return [] }
+        guard let (items, compartments) = snapshot() else {
+            lastSyncSucceeded = false
+            return []
+        }
+        lastSyncSucceeded = true
         let ours = await client.pendingIdentifiers().filter { $0.hasPrefix(PlannedNotification.identifierPrefix) }
         let activeIDs = Set(items.filter(\.isActive).map(\.id))
 
@@ -141,6 +154,7 @@ final class NotificationCoordinator {
                 try await client.add(notification) // same identifier replaces → never duplicates
                 scheduled.append(notification)
             } catch {
+                lastSyncSucceeded = false
                 logger.error("Scheduling a notification failed: \(String(describing: error), privacy: .private)")
             }
         }
