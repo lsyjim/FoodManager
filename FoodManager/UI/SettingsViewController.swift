@@ -5,7 +5,7 @@ import UIKit
 final class SettingsViewController: UITableViewController {
     private enum Row: Equatable {
         case upgrade, restore, premiumUnlocked, adFree
-        case notifications
+        case notifications, fridges
         case privacyOptions
         #if DEBUG
         case devPremium, devAds, devResetConsent, devAdStatus
@@ -21,9 +21,14 @@ final class SettingsViewController: UITableViewController {
     private let entitlements: EntitlementService?
     private let ads: AdsCoordinator?
     private let notifications: NotificationCoordinator
+    private let makeFridgeManagement: (() -> UIViewController?)?
     private var sections: [Section] = []
 
-    init(entitlements: EntitlementService?, ads: AdsCoordinator?, notifications: NotificationCoordinator) {
+    /// `entitlements` / `ads` are nil while monetization is suspended (`MonetizationPolicy`): every paid
+    /// entry point (完整版, 恢復購買, 廣告與隱私, developer purchase switches) is then hidden.
+    init(entitlements: EntitlementService?, ads: AdsCoordinator?, notifications: NotificationCoordinator,
+         makeFridgeManagement: (() -> UIViewController?)? = nil) {
+        self.makeFridgeManagement = makeFridgeManagement
         self.entitlements = entitlements
         self.ads = ads
         self.notifications = notifications
@@ -59,7 +64,7 @@ final class SettingsViewController: UITableViewController {
                 sections.append(Section(title: "完整版", footer: "完整版為一次性購買，永久移除廣告。", rows: [.upgrade, .restore]))
             }
         }
-        sections.append(Section(title: "一般", footer: nil, rows: [.notifications]))
+        sections.append(Section(title: "一般", footer: nil, rows: makeFridgeManagement == nil ? [.notifications] : [.fridges, .notifications]))
         if let ads, entitlements?.isPremium == false, ads.privacyOptionsRequired {
             sections.append(Section(title: "廣告與隱私", footer: "管理廣告個人化與資料使用的同意設定。", rows: [.privacyOptions]))
         }
@@ -105,6 +110,10 @@ final class SettingsViewController: UITableViewController {
             content.secondaryText = "已移除"
             content.image = UIImage(systemName: "nosign")
             cell.selectionStyle = .none
+        case .fridges:
+            content.text = "管理冰箱"
+            content.image = UIImage(systemName: "refrigerator")
+            cell.accessoryType = .disclosureIndicator
         case .notifications:
             content.text = "通知設定"
             content.image = UIImage(systemName: "bell")
@@ -161,6 +170,8 @@ final class SettingsViewController: UITableViewController {
             PremiumPurchaseViewController.present(entitlements: entitlements, from: self)
         case .restore:
             restore()
+        case .fridges:
+            if let management = makeFridgeManagement?() { navigationController?.pushViewController(management, animated: true) }
         case .notifications:
             navigationController?.pushViewController(NotificationSettingsViewController(coordinator: notifications), animated: true)
         case .privacyOptions:

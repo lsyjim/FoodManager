@@ -129,13 +129,22 @@ enum FoodActions {
     }
 
     /// Lets the user pick another compartment. Moving keeps the same record, ID and dates.
+    /// `otherFridges` lists the user's other fridge(s); choosing one of their compartments moves the food there.
     static func presentMove(_ item: FoodItem, inventory: FoodInventoryService, compartments: [Compartment],
-                            from presenter: UIViewController, sourceView: UIView?) {
+                            otherFridges: [Fridge] = [], from presenter: UIViewController, sourceView: UIView?) {
         let sheet = UIAlertController(title: "移動「\(item.name)」", message: "放入日期會保留", preferredStyle: .actionSheet)
         for compartment in compartments where compartment.id != item.compartmentID {
             sheet.addAction(UIAlertAction(title: CompartmentNaming.locationWithStorage(compartment), style: .default) { _ in
                 perform(on: presenter) { try inventory.move(item.id, to: compartment.id) }
             })
+        }
+        for fridge in otherFridges {
+            for compartment in fridge.allCompartments {
+                sheet.addAction(UIAlertAction(title: "\(fridge.name) · \(CompartmentNaming.locationWithStorage(compartment))",
+                                              style: .default) { _ in
+                    perform(on: presenter) { try inventory.move(item.id, to: compartment.id, in: fridge) }
+                })
+            }
         }
         sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
         if let popover = sheet.popoverPresentationController {

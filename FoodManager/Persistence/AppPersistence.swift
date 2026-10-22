@@ -59,8 +59,17 @@ final class AppPersistence {
 struct AppSession {
     let fridgeStore: FridgeStore
     let foodStore: FoodStore
+    /// The selected fridge.
     let loadResult: FridgeLoadResult
     let mode: PersistenceMode
+    let directory: FridgeDirectory
+
+    /// Same storage, another fridge (re-reads stored fridges so door states and layouts are current).
+    func selecting(_ fridgeID: UUID) throws -> AppSession {
+        try directory.select(fridgeID)
+        return AppSession(fridgeStore: fridgeStore, foodStore: foodStore, loadResult: directory.selected,
+                          mode: mode, directory: directory)
+    }
 }
 
 enum AppBootstrap {
@@ -72,9 +81,12 @@ enum AppBootstrap {
         case let .available(container, mode):
             let fridgeStore = SwiftDataFridgeStore(container: container)
             do {
-                let result = try fridgeStore.load()
-                return .success(AppSession(fridgeStore: fridgeStore, foodStore: SwiftDataFoodStore(container: container),
-                                           loadResult: result, mode: mode))
+                let foodStore = SwiftDataFoodStore(container: container)
+                // Tests and UI tests keep their selection in memory, never in the user's preferences.
+                let selection: FridgeSelectionStore = mode == .persistent ? UserDefaultsFridgeSelectionStore() : InMemoryFridgeSelectionStore()
+                let directory = try FridgeDirectory(fridgeStore: fridgeStore, foodStore: foodStore, selection: selection)
+                return .success(AppSession(fridgeStore: fridgeStore, foodStore: foodStore,
+                                           loadResult: directory.selected, mode: mode, directory: directory))
             } catch {
                 Logger(subsystem: "FoodManager.HowCode", category: "Persistence")
                     .error("Fridge load failed: \(String(describing: error), privacy: .private)")

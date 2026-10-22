@@ -27,7 +27,7 @@ final class AppNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
     @discardableResult
     func handle(userInfo: [AnyHashable: Any]) -> Bool {
         guard let foodID = NotificationPayload.foodID(from: userInfo) else { return false }
-        route(.link(AppDeepLink(.food(foodID))))
+        route(.link(AppDeepLink(.food(foodID), refrigeratorID: NotificationPayload.fridgeID(from: userInfo))))
         return true
     }
 

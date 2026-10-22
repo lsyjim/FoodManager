@@ -100,14 +100,20 @@ final class WidgetIntegrationTests: XCTestCase {
         let file = WidgetSnapshotFile(url: directory.appendingPathComponent("s.json"))
         XCTAssertNil(file.read(), "missing file → nil")
         let snapshot = WidgetSnapshotBuilder.build(fridge: fridge, items: [item("牛奶", in: chilled, expiresIn: 1)], now: now)
-        try file.write(WidgetSnapshotFile.encode(snapshot))
-        XCTAssertEqual(file.read(), snapshot)
+        let bundle = WidgetSnapshotBundle(bundleVersion: WidgetSnapshotBundle.currentVersion, generatedAt: now,
+                                          selectedFridgeID: fridge.id, fridges: [snapshot])
+        try file.write(WidgetSnapshotFile.encode(bundle))
+        XCTAssertEqual(file.read(), bundle)
         try file.write(Data("{garbage".utf8))
         XCTAssertNil(file.read(), "malformed → nil, never wrong numbers")
-        var future = snapshot
-        future.snapshotVersion = 99
+        var future = bundle
+        future.bundleVersion = 99
         try file.write(WidgetSnapshotFile.encode(future))
         XCTAssertNil(file.read(), "unknown version → nil")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        try file.write(encoder.encode(snapshot))
+        XCTAssertNil(file.read(), "an old single-fridge (v1) file is ignored until the app rewrites it")
     }
 
     func testPublisherWritesAndReloadsOnlyOnChanges() throws {
@@ -116,24 +122,24 @@ final class WidgetIntegrationTests: XCTestCase {
         let publisher = WidgetSnapshotPublisher(file: file, reloader: reloader, calendar: calendar)
         let milk = item("牛奶", in: chilled, expiresIn: 1)
 
-        publisher.publish(fridge: fridge, items: [milk], now: now)
+        publisher.publish(fridges: [fridge], items: [milk], selectedFridgeID: fridge.id, now: now)
         publisher.waitUntilIdle()
         drainMain()
-        XCTAssertEqual(file.read()?.urgentFoodItems.map(\.id), [milk.id])
+        XCTAssertEqual(file.read()?.fridges.first?.urgentFoodItems.map(\.id), [milk.id])
         XCTAssertEqual(reloader.count, 1)
 
-        publisher.publish(fridge: fridge, items: [milk], now: now.addingTimeInterval(60))
+        publisher.publish(fridges: [fridge], items: [milk], selectedFridgeID: fridge.id, now: now.addingTimeInterval(60))
         publisher.waitUntilIdle()
         drainMain()
         XCTAssertEqual(reloader.count, 1, "unchanged content → no extra reload")
 
-        publisher.publish(fridge: fridge, items: [], now: now.addingTimeInterval(120))
+        publisher.publish(fridges: [fridge], items: [], selectedFridgeID: fridge.id, now: now.addingTimeInterval(120))
         publisher.waitUntilIdle()
         drainMain()
         XCTAssertEqual(reloader.count, 2)
-        XCTAssertEqual(file.read()?.urgentFoodItems, [])
+        XCTAssertEqual(file.read()?.fridges.first?.urgentFoodItems, [])
 
-        publisher.publish(fridge: fridge, items: [], now: day(1))
+        publisher.publish(fridges: [fridge], items: [], selectedFridgeID: fridge.id, now: day(1))
         publisher.waitUntilIdle()
         drainMain()
         XCTAssertEqual(reloader.count, 3, "a new day refreshes a stale snapshot")
@@ -142,7 +148,7 @@ final class WidgetIntegrationTests: XCTestCase {
     func testPublisherWithoutAppGroupDoesNothing() {
         let reloader = CountingReloader()
         let publisher = WidgetSnapshotPublisher(file: nil, reloader: reloader)
-        publisher.publish(fridge: fridge, items: [item("牛奶", in: chilled)], now: now)
+        publisher.publish(fridges: [fridge], items: [item("牛奶", in: chilled)], selectedFridgeID: fridge.id, now: now)
         publisher.waitUntilIdle()
         drainMain()
         XCTAssertEqual(reloader.count, 0)

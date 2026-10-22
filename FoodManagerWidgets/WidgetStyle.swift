@@ -50,6 +50,7 @@ struct AddBadge: View {
 
 /// Header shared by medium and large widgets: fridge illustration, name, today's total, quick add.
 struct FridgeHeader: View {
+    @Environment(\.linkFridgeID) private var linkFridgeID
     let name: String
     let summary: WidgetReminderSummary
 
@@ -71,7 +72,7 @@ struct FridgeHeader: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
-            Link(destination: AppDeepLink(.quickAdd(compartmentID: nil)).url) { AddBadge() }
+            Link(destination: AppDeepLink(.quickAdd(compartmentID: nil), refrigeratorID: linkFridgeID).url) { AddBadge() }
         }
     }
 
@@ -84,13 +85,14 @@ struct FridgeHeader: View {
 
 /// 冷藏 / 冷凍 count card; taps open the reminder center filtered to that storage type.
 struct StorageCountCard: View {
+    @Environment(\.linkFridgeID) private var linkFridgeID
     let title: String
     let storage: StorageType
     let count: Int
     let filter: StorageFilter
 
     var body: some View {
-        Link(destination: AppDeepLink(.reminders(storage: filter, kind: .all)).url) {
+        Link(destination: AppDeepLink(.reminders(storage: filter, kind: .all), refrigeratorID: linkFridgeID).url) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     StorageDot(color: WidgetPalette.storage(storage))
@@ -116,11 +118,12 @@ struct StorageCountCard: View {
 
 /// One urgent food: illustration, name, location and its most important status.
 struct UrgentFoodRow: View {
+    @Environment(\.linkFridgeID) private var linkFridgeID
     let entry: WidgetReminderSummary.Entry
     var showsLocation = true
 
     var body: some View {
-        Link(destination: AppDeepLink(.food(entry.item.id)).url) {
+        Link(destination: AppDeepLink(.food(entry.item.id), refrigeratorID: linkFridgeID).url) {
             HStack(spacing: 10) {
                 Image(entry.item.categoryAssetName)
                     .resizable()
@@ -152,6 +155,7 @@ struct UrgentFoodRow: View {
 
 /// Shown until the app has written a snapshot (or if it is unreadable).
 struct OpenAppPrompt: View {
+    @Environment(\.linkFridgeID) private var linkFridgeID
     var compact = false
 
     var body: some View {
@@ -163,6 +167,6 @@ struct OpenAppPrompt: View {
                 .foregroundStyle(WidgetPalette.textSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .widgetURL(AppDeepLink(.home).url)
+        .widgetURL(AppDeepLink(.home, refrigeratorID: linkFridgeID).url)
     }
 }

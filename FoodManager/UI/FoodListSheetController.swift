@@ -5,6 +5,8 @@ import UIKit
 final class FoodListSheetController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     var onAddFood: ((UUID) -> Void)?
     var onEditFood: ((UUID) -> Void)?
+    /// The user's other fridges (move targets).
+    var otherFridges: () -> [Fridge] = { [] }
 
     private(set) var compartmentID: UUID
     private let inventory: FoodInventoryService
@@ -144,7 +146,8 @@ final class FoodListSheetController: UIViewController, UITableViewDataSource, UI
         consumed.backgroundColor = Theme.Color.stroke
         let move = UIContextualAction(style: .normal, title: "移動") { [weak self] _, _, done in
             guard let self else { return done(false) }
-            FoodActions.presentMove(item, inventory: self.inventory, compartments: self.compartments(), from: self,
+            FoodActions.presentMove(item, inventory: self.inventory, compartments: self.compartments(),
+                                    otherFridges: self.otherFridges(), from: self,
                                     sourceView: tableView.cellForRow(at: indexPath))
             done(true)
         }

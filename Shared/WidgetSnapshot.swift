@@ -58,6 +58,24 @@ struct WidgetSnapshot: Codable, Equatable {
     }
 }
 
+/// What the app writes to the App Group: one snapshot per fridge plus the fridge selected in the app.
+/// Widgets configured for a specific fridge show that one; otherwise they follow the app's selection.
+struct WidgetSnapshotBundle: Codable, Equatable {
+    static let currentVersion = 2
+
+    var bundleVersion: Int
+    var generatedAt: Date
+    var selectedFridgeID: UUID
+    var fridges: [WidgetSnapshot]
+
+    /// The configured fridge if it still exists, else the app's selected fridge, else the first one
+    /// (a deleted fridge never shows stale food).
+    func snapshot(for fridgeID: UUID?) -> WidgetSnapshot? {
+        if let fridgeID, let match = fridges.first(where: { $0.refrigeratorID == fridgeID }) { return match }
+        return fridges.first { $0.refrigeratorID == selectedFridgeID } ?? fridges.first
+    }
+}
+
 /// Counts and an urgency-ordered list for one day. A food appears once even with several statuses.
 struct WidgetReminderSummary: Equatable {
     struct Entry: Equatable, Identifiable {
@@ -115,26 +133,27 @@ struct WidgetSnapshotFile {
         AppGroup.containerURL.map { WidgetSnapshotFile(url: $0.appendingPathComponent(fileName)) }
     }
 
-    /// Missing, unreadable, malformed or future-version files all yield nil (the widget then shows
-    /// an "open the app" state instead of wrong numbers).
-    func read() -> WidgetSnapshot? {
+    /// Missing, unreadable, malformed, old single-fridge (v1) or future-version files all yield nil (the
+    /// widget then shows an "open the app" state instead of wrong numbers; the app rewrites it on launch).
+    func read() -> WidgetSnapshotBundle? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return Self.decode(data)
     }
 
-    static func decode(_ data: Data) -> WidgetSnapshot? {
+    static func decode(_ data: Data) -> WidgetSnapshotBundle? {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
-        guard let snapshot = try? decoder.decode(WidgetSnapshot.self, from: data),
-              snapshot.snapshotVersion == WidgetSnapshot.currentVersion else { return nil }
-        return snapshot
+        guard let bundle = try? decoder.decode(WidgetSnapshotBundle.self, from: data),
+              bundle.bundleVersion == WidgetSnapshotBundle.currentVersion,
+              bundle.fridges.allSatisfy({ $0.snapshotVersion == WidgetSnapshot.currentVersion }) else { return nil }
+        return bundle
     }
 
-    static func encode(_ snapshot: WidgetSnapshot) throws -> Data {
+    static func encode(_ bundle: WidgetSnapshotBundle) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .secondsSince1970
         encoder.outputFormatting = [.sortedKeys]
-        return try encoder.encode(snapshot)
+        return try encoder.encode(bundle)
     }
 
     /// Atomic replace, so the widget never reads a half-written file.

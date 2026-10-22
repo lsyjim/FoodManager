@@ -15,8 +15,9 @@ struct FridgeSummaryWidget: Widget {
     static let kind = "FridgeSummaryWidget"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: Self.kind, provider: FridgeTimelineProvider()) { entry in
+        AppIntentConfiguration(kind: Self.kind, intent: SelectFridgeIntent.self, provider: FridgeTimelineProvider()) { entry in
             FridgeSummaryView(entry: entry)
+                .environment(\.linkFridgeID, entry.linkFridgeID)
                 .containerBackground(for: .widget) { WidgetPalette.background }
         }
         .configurationDisplayName("我的冰箱")
@@ -26,6 +27,7 @@ struct FridgeSummaryWidget: Widget {
 }
 
 struct FridgeSummaryView: View {
+    @Environment(\.linkFridgeID) private var linkFridgeID
     @Environment(\.widgetFamily) private var family
     let entry: FridgeEntry
 
@@ -42,7 +44,7 @@ struct FridgeSummaryView: View {
         } else {
             switch family {
             case .accessoryCircular, .accessoryRectangular:
-                Image(systemName: "refrigerator").font(.title2).widgetURL(AppDeepLink(.home).url)
+                Image(systemName: "refrigerator").font(.title2).widgetURL(AppDeepLink(.home, refrigeratorID: linkFridgeID).url)
             default:
                 OpenAppPrompt(compact: family == .systemSmall)
             }
@@ -53,6 +55,7 @@ struct FridgeSummaryView: View {
 /// Small: one destination only (small widgets have a single tap target), so it opens the reminder center.
 /// Quick add lives in the separate 快速新增 widget instead of a fake button.
 struct SmallFridgeView: View {
+    @Environment(\.linkFridgeID) private var linkFridgeID
     let name: String
     let summary: WidgetReminderSummary
 
@@ -83,7 +86,7 @@ struct SmallFridgeView: View {
                 storageLabel("冷凍", count: summary.frozenCount, type: .frozen)
             }
         }
-        .widgetURL(AppDeepLink(.reminders(storage: .all, kind: .all)).url)
+        .widgetURL(AppDeepLink(.reminders(storage: .all, kind: .all), refrigeratorID: linkFridgeID).url)
         .accessibilityElement(children: .combine)
     }
 
@@ -96,6 +99,7 @@ struct SmallFridgeView: View {
 }
 
 struct MediumFridgeView: View {
+    @Environment(\.linkFridgeID) private var linkFridgeID
     let name: String
     let summary: WidgetReminderSummary
 
@@ -108,7 +112,7 @@ struct MediumFridgeView: View {
             }
             HStack(spacing: 6) {
                 if let top = summary.entries.first {
-                    Link(destination: AppDeepLink(.food(top.item.id)).url) {
+                    Link(destination: AppDeepLink(.food(top.item.id), refrigeratorID: linkFridgeID).url) {
                         Text("\(top.item.name) · \(top.primaryStatus)")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(top.kinds.contains(.expired) ? WidgetPalette.alert : WidgetPalette.textPrimary)
@@ -118,7 +122,7 @@ struct MediumFridgeView: View {
                     Text("冰箱裡的食材都還好").font(.system(size: 12)).foregroundStyle(WidgetPalette.textSecondary)
                 }
                 Spacer(minLength: 4)
-                Link(destination: AppDeepLink(.reminders(storage: .all, kind: .all)).url) {
+                Link(destination: AppDeepLink(.reminders(storage: .all, kind: .all), refrigeratorID: linkFridgeID).url) {
                     Text("查看提醒 \(Image(systemName: "arrow.up.right"))")
                         .font(.system(size: 12))
                         .foregroundStyle(WidgetPalette.textSecondary)
@@ -129,6 +133,7 @@ struct MediumFridgeView: View {
 }
 
 struct LargeFridgeView: View {
+    @Environment(\.linkFridgeID) private var linkFridgeID
     static let maxRows = 5
 
     let name: String
@@ -177,7 +182,7 @@ struct LargeFridgeView: View {
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(sections, id: \.title) { section in
-                        Link(destination: AppDeepLink(.reminders(storage: .all, kind: section.filter)).url) {
+                        Link(destination: AppDeepLink(.reminders(storage: .all, kind: section.filter), refrigeratorID: linkFridgeID).url) {
                             Text(section.title)
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(WidgetPalette.textSecondary)
@@ -191,7 +196,7 @@ struct LargeFridgeView: View {
             }
             HStack {
                 Spacer()
-                Link(destination: AppDeepLink(.reminders(storage: .all, kind: .all)).url) {
+                Link(destination: AppDeepLink(.reminders(storage: .all, kind: .all), refrigeratorID: linkFridgeID).url) {
                     Text("查看全部 \(summary.attentionCount) 項 \(Image(systemName: "arrow.up.right"))")
                         .font(.system(size: 12))
                         .foregroundStyle(WidgetPalette.textSecondary)
@@ -205,6 +210,7 @@ struct LargeFridgeView: View {
 
 /// Monochrome-friendly: no illustrations, just the attention count.
 struct CircularAttentionView: View {
+    @Environment(\.linkFridgeID) private var linkFridgeID
     let count: Int
 
     var body: some View {
@@ -220,12 +226,13 @@ struct CircularAttentionView: View {
             }
         }
         .widgetAccentable()
-        .widgetURL(AppDeepLink(.reminders(storage: .all, kind: .all)).url)
+        .widgetURL(AppDeepLink(.reminders(storage: .all, kind: .all), refrigeratorID: linkFridgeID).url)
         .accessibilityLabel(count == 0 ? "冰箱沒有需要注意的食材" : "冰箱有 \(count) 項食材需要注意")
     }
 }
 
 struct RectangularAttentionView: View {
+    @Environment(\.linkFridgeID) private var linkFridgeID
     let summary: WidgetReminderSummary
 
     var body: some View {
@@ -245,7 +252,7 @@ struct RectangularAttentionView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .widgetURL(AppDeepLink(.reminders(storage: .all, kind: .all)).url)
+        .widgetURL(AppDeepLink(.reminders(storage: .all, kind: .all), refrigeratorID: linkFridgeID).url)
     }
 }
 
@@ -255,8 +262,9 @@ struct QuickAddWidget: Widget {
     static let kind = "QuickAddWidget"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: Self.kind, provider: QuickAddProvider()) { _ in
-            QuickAddView()
+        AppIntentConfiguration(kind: Self.kind, intent: SelectFridgeIntent.self, provider: FridgeTimelineProvider()) { entry in
+            QuickAddView(fridgeName: entry.snapshot?.refrigeratorName)
+                .environment(\.linkFridgeID, entry.linkFridgeID)
                 .containerBackground(for: .widget) { WidgetPalette.background }
         }
         .configurationDisplayName("快速新增")
@@ -265,17 +273,10 @@ struct QuickAddWidget: Widget {
     }
 }
 
-struct QuickAddProvider: TimelineProvider {
-    func placeholder(in context: Context) -> SimpleEntry { SimpleEntry(date: Date()) }
-    func getSnapshot(in context: Context, completion: @escaping (SimpleEntry) -> Void) { completion(SimpleEntry(date: Date())) }
-    func getTimeline(in context: Context, completion: @escaping (Timeline<SimpleEntry>) -> Void) {
-        completion(Timeline(entries: [SimpleEntry(date: Date())], policy: .never))
-    }
-}
-
-struct SimpleEntry: TimelineEntry { let date: Date }
-
 struct QuickAddView: View {
+    /// Shown so it's clear which fridge the food goes into.
+    var fridgeName: String?
+    @Environment(\.linkFridgeID) private var linkFridgeID
     @Environment(\.widgetFamily) private var family
 
     var body: some View {
@@ -300,11 +301,11 @@ struct QuickAddView: View {
                         .foregroundStyle(WidgetPalette.textPrimary)
                         .padding(.top, 6)
                     Spacer(minLength: 4)
-                    Text("開啟新增表單").font(.system(size: 11)).foregroundStyle(WidgetPalette.textSecondary)
+                    Text(fridgeName.map { "放入「\($0)」" } ?? "開啟新增表單").font(.system(size: 11)).foregroundStyle(WidgetPalette.textSecondary)
                 }
             }
         }
-        .widgetURL(AppDeepLink(.quickAdd(compartmentID: nil)).url)
+        .widgetURL(AppDeepLink(.quickAdd(compartmentID: nil), refrigeratorID: linkFridgeID).url)
         .accessibilityLabel("新增食材")
     }
 }
@@ -314,4 +315,4 @@ struct QuickAddView: View {
 #Preview("Small", as: .systemSmall) { FridgeSummaryWidget() } timeline: { FridgeEntry(date: .now, snapshot: .sample) }
 #Preview("Medium", as: .systemMedium) { FridgeSummaryWidget() } timeline: { FridgeEntry(date: .now, snapshot: .sample) }
 #Preview("Large", as: .systemLarge) { FridgeSummaryWidget() } timeline: { FridgeEntry(date: .now, snapshot: .sample) }
-#Preview("Quick add", as: .systemSmall) { QuickAddWidget() } timeline: { SimpleEntry(date: .now) }
+#Preview("Quick add", as: .systemSmall) { QuickAddWidget() } timeline: { FridgeEntry(date: .now, snapshot: .sample) }

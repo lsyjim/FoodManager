@@ -3,7 +3,19 @@ import UIKit
 /// In-app reminder center: 即將到期 / 已過期 / 保存提醒 for 全部 / 冷藏 / 冷凍, computed live from persisted
 /// inventory (works without notification permission). Tapping a food opens its editor.
 final class ReminderCenterViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
-    var onOpenFood: ((UUID) -> Void)?
+    /// Food of every fridge, for the 所有冰箱 scope (nil or a single fridge hides the scope control).
+    struct AllFridges {
+        let items: [FoodItem]
+        let compartments: [Compartment]
+        let names: [UUID: String]
+    }
+
+    enum Scope { case currentFridge, allFridges }
+
+    var onOpenFood: ((FoodItem) -> Void)?
+    var allFridges: (() -> AllFridges?)?
+    private(set) var scope: Scope = .currentFridge
+    private let scopeControl = UISegmentedControl(items: ["目前冰箱", "所有冰箱"])
     var onOpenSettings: (() -> Void)?
 
     private(set) var storageFilter: StorageFilter
@@ -61,14 +73,19 @@ final class ReminderCenterViewController: UIViewController, UITableViewDataSourc
 
     @objc func reload() {
         let now = Date()
-        let items = inventory.items, compartments = compartments()
+        let everywhere = allFridges?()
+        scopeControl.isHidden = (everywhere?.names.count ?? 1) < 2
+        let showAll = scope == .allFridges && everywhere != nil && !scopeControl.isHidden
+        let items = showAll ? everywhere!.items : inventory.items
+        let compartments = showAll ? everywhere!.compartments : compartments()
         let counts = builder.counts(items: items, compartments: compartments, storage: storageFilter, now: now)
-        let failedWithoutData = inventory.loadState.isFailed && items.isEmpty
+        let failedWithoutData = (scope == .allFridges && everywhere == nil) || (inventory.loadState.isFailed && items.isEmpty)
         for (kind, tile) in tiles {
             let count: Int? = failedWithoutData ? nil : counts[kind.reminderKind!] ?? 0
             tile.update(count: count, isSelected: kind == kindFilter)
         }
-        entries = builder.entries(items: items, compartments: compartments, storage: storageFilter, kind: kindFilter, now: now)
+        entries = builder.entries(items: items, compartments: compartments, storage: storageFilter, kind: kindFilter, now: now,
+                                  fridgeNames: showAll ? everywhere!.names : nil)
         emptyLabel.text = failedWithoutData ? "無法讀取食材資料" : "目前沒有需要注意的食材"
         retryButton.isHidden = !failedWithoutData
         emptyView.isHidden = !entries.isEmpty
@@ -78,6 +95,12 @@ final class ReminderCenterViewController: UIViewController, UITableViewDataSourc
     func select(storage: StorageFilter) {
         storageFilter = storage
         filterControl.selectedSegmentIndex = StorageFilter.allCases.firstIndex(of: storage) ?? 0
+        reload()
+    }
+
+    func select(scope: Scope) {
+        self.scope = scope
+        scopeControl.selectedSegmentIndex = scope == .allFridges ? 1 : 0
         reload()
     }
 
@@ -107,7 +130,17 @@ final class ReminderCenterViewController: UIViewController, UITableViewDataSourc
             tile.addAction(UIAction { [weak self] _ in self?.select(kind: kind) }, for: .touchUpInside)
         }
 
-        let header = UIStackView(arrangedSubviews: [filterControl, tileRow])
+        scopeControl.selectedSegmentIndex = 0
+        scopeControl.selectedSegmentTintColor = Theme.Color.interior
+        scopeControl.backgroundColor = Theme.Color.fridgeBody
+        scopeControl.accessibilityLabel = "冰箱範圍"
+        scopeControl.accessibilityIdentifier = "reminder.scope"
+        scopeControl.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.select(scope: self.scopeControl.selectedSegmentIndex == 1 ? .allFridges : .currentFridge)
+        }, for: .valueChanged)
+
+        let header = UIStackView(arrangedSubviews: [scopeControl, filterControl, tileRow])
         header.axis = .vertical
         header.spacing = 12
         header.translatesAutoresizingMaskIntoConstraints = false
@@ -165,7 +198,7 @@ final class ReminderCenterViewController: UIViewController, UITableViewDataSourc
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        onOpenFood?(entries[indexPath.row].item.id)
+        onOpenFood?(entries[indexPath.row].item)
     }
 }
 

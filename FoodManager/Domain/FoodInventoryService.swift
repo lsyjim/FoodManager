@@ -224,6 +224,20 @@ final class FoodInventoryService {
         try persist(item)
     }
 
+    /// Moves food into another fridge: one write sets both `fridgeID` and `compartmentID`, and only after
+    /// checking the compartment really belongs to that fridge (never a mismatched pair).
+    func move(_ id: UUID, to compartmentID: UUID, in destination: Fridge) throws {
+        if destination.id == fridgeID { return try move(id, to: compartmentID) }
+        guard var item = item(id: id) else { throw FoodStoreError.notFound }
+        guard destination.allCompartments.contains(where: { $0.id == compartmentID }) else {
+            throw FoodValidationError.compartmentNotFound
+        }
+        item.fridgeID = destination.id
+        item.compartmentID = compartmentID
+        item.updatedAt = now()
+        try persist(item)
+    }
+
     /// Removes the item from the active inventory (kept in storage with `consumedAt`).
     func markConsumed(_ id: UUID) throws {
         guard var item = item(id: id) else { throw FoodStoreError.notFound }
@@ -308,9 +322,11 @@ final class FoodInventoryService {
     /// so a failed save never looks like a successful one.
     private func persist(_ item: FoodItem) throws {
         try store.upsert(item)
+        // Only this fridge's active food stays in the snapshot (moved-away or consumed items leave it).
+        let belongsHere = item.isActive && item.fridgeID == fridgeID
         if let index = items.firstIndex(where: { $0.id == item.id }) {
-            if item.isActive { items[index] = item } else { items.remove(at: index) }
-        } else if item.isActive {
+            if belongsHere { items[index] = item } else { items.remove(at: index) }
+        } else if belongsHere {
             items.append(item)
         }
         didChange(removed: nil)

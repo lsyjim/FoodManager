@@ -5,14 +5,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     private(set) var home: FridgeHomeViewController?
     private lazy var persistence = Self.makePersistence()
-    /// StoreKit + ads exist only in real runs (never in unit tests or UI tests).
-    private lazy var monetization: (entitlements: EntitlementService, ads: AdsCoordinator)? = {
-        guard persistence.mode == .persistent else { return nil }
-        let entitlements = EntitlementService(store: AppStoreClient())
-        entitlements.start()
-        let ads = AdsCoordinator(entitlements: entitlements, consent: GoogleConsentProvider(), sdk: GoogleAdSDK())
-        return (entitlements, ads)
-    }()
+    /// Built once from `MonetizationPolicy` (survives storage retries and fridge switches).
+    private lazy var monetization = MonetizationServices.make(policy: .current, mode: persistence.mode)
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
@@ -28,7 +22,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// Refunds, purchases on other devices or Ask-to-Buy approvals may have happened while in the background.
     func sceneWillEnterForeground(_ scene: UIScene) {
-        guard let entitlements = monetization?.entitlements else { return }
+        guard let entitlements = monetization.entitlementObserver else { return }
         Task { await entitlements.refresh() }
     }
 
@@ -42,11 +36,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func start() {
         switch AppBootstrap.start(persistence) {
         case let .success(session):
-            let home = FridgeHomeViewController(session: session, entitlements: monetization?.entitlements, ads: monetization?.ads)
-            self.home = home
-            let navigation = UINavigationController(rootViewController: home)
-            navigation.navigationBar.tintColor = Theme.Color.stroke
-            window?.rootViewController = navigation
+            show(session)
         case .failure:
             home = nil
             if let errorScreen = window?.rootViewController as? StorageUnavailableViewController {
@@ -56,6 +46,30 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 errorScreen.onRetry = { [weak self] in self?.start() }
                 window?.rootViewController = errorScreen
             }
+        }
+    }
+
+    /// Shows the home screen for the session's selected fridge.
+    private func show(_ session: AppSession, animated: Bool = false) {
+        let home = FridgeHomeViewController(session: session, entitlements: monetization.entitlementsForUI, ads: monetization.ads)
+        home.onSwitchFridge = { [weak self] id, route in self?.switchFridge(to: id, from: session, then: route) }
+        self.home = home
+        let navigation = UINavigationController(rootViewController: home)
+        navigation.navigationBar.tintColor = Theme.Color.stroke
+        guard let window else { return }
+        window.rootViewController = navigation
+        if animated && !UIAccessibility.isReduceMotionEnabled {
+            UIView.transition(with: window, duration: 0.25, options: .transitionCrossDissolve, animations: nil)
+        }
+    }
+
+    /// Selects another fridge (remembered for the next launch) and shows it, then delivers `route` there.
+    private func switchFridge(to id: UUID, from session: AppSession, then route: ExternalRoute?) {
+        do {
+            show(try session.selecting(id), animated: true)
+            if let route { AppNotificationRouter.shared.route(route) }
+        } catch {
+            home?.showMessage("無法切換冰箱，請再試一次。")
         }
     }
 

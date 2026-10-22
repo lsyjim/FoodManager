@@ -6,6 +6,10 @@ import os
 final class FridgeHomeViewController: UIViewController {
     private let store: FridgeStore
     private let foodStore: FoodStore
+    /// All fridges + selection. The home screen shows one fridge; switching rebuilds it (see `onSwitchFridge`).
+    let directory: FridgeDirectory
+    /// Rebuilds the app for another fridge, then delivers `route` there (set by the scene delegate).
+    var onSwitchFridge: ((UUID, ExternalRoute?) -> Void)?
     /// Food rules always validate against the *persisted* layout, never an unsaved edit.
     private lazy var inventory = FoodInventoryService(store: foodStore, fridgeID: fridge.id,
                                                       compartments: { [weak self] in self?.fridge.allCompartments ?? [] })
@@ -15,7 +19,7 @@ final class FridgeHomeViewController: UIViewController {
     /// Keeps pending notifications in sync with the persisted inventory (a delivery mechanism only).
     private lazy var notifications = NotificationCoordinator(
         client: notificationClient, preferencesStore: UserDefaultsNotificationPreferencesStore(),
-        snapshot: { [weak self] in (self?.inventory.items ?? [], self?.fridge.allCompartments ?? []) })
+        snapshot: { [weak self] in self?.allFridgesData().map { ($0.items, $0.compartments) } })
     private let template: FridgeTemplate
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "Home")
 
@@ -34,6 +38,9 @@ final class FridgeHomeViewController: UIViewController {
 
     // Header
     private let titleLabel = UILabel()
+    private let fridgeCaption = UILabel()
+    /// Fridge name + chevron; opens the fridge menu (switch / add / manage).
+    private let fridgeSelector = UIButton(type: .system)
     private let subtitleLabel = UILabel()
     private lazy var closeDoorButton = UIButton.sketchButton(title: "關門")
     private lazy var editButton = UIButton.sketchButton(title: "編輯", systemImage: "square.and.pencil")
@@ -99,6 +106,7 @@ final class FridgeHomeViewController: UIViewController {
         self.widgetPublisher = widgetPublisher
             ?? (session.mode == .persistent ? WidgetSnapshotPublisher() : WidgetSnapshotPublisher(file: nil))
         store = session.fridgeStore
+        directory = session.directory
         foodStore = session.foodStore
         fridge = session.loadResult.fridge
         layoutRecovery = session.loadResult.recovery
@@ -160,8 +168,28 @@ final class FridgeHomeViewController: UIViewController {
     /// Publishes the widget snapshot only from successfully loaded data (never after a failed read;
     /// food changes only notify after they were persisted). Runs off the main thread.
     private func publishWidgetSnapshot() {
-        guard inventory.loadState == .loaded else { return }
-        widgetPublisher.publish(fridge: fridge, items: inventory.items)
+        guard inventory.loadState == .loaded, let data = allFridgesData() else { return }
+        widgetPublisher.publish(fridges: data.fridges, items: data.items, selectedFridgeID: fridge.id)
+    }
+
+    /// Every fridge with its active food: this fridge from memory (freshest), the others from storage.
+    /// nil if another fridge's food can't be read (callers then skip work instead of acting on partial data).
+    func allFridgesData() -> (fridges: [Fridge], items: [FoodItem], compartments: [Compartment])? {
+        let fridges = directory.fridges.map { $0.id == fridge.id ? fridge : $0 }
+        guard fridges.contains(where: { $0.id == fridge.id }) else { return nil }
+        var items = inventory.items
+        for other in fridges where other.id != fridge.id {
+            guard let food = try? foodStore.activeItems(fridgeID: other.id) else { return nil }
+            items += food
+        }
+        return (fridges, items, fridges.flatMap(\.allCompartments))
+    }
+
+    @objc private func fridgesChanged() {
+        if let renamed = directory.fridge(id: fridge.id) { fridge.name = renamed.name }
+        render(animated: false)
+        publishWidgetSnapshot()
+        notifications.scheduleUpdate()
     }
 
     @objc private func inventoryDidChange() {
@@ -278,7 +306,11 @@ final class FridgeHomeViewController: UIViewController {
         subtitleLabel.font = Theme.Font.caption
         subtitleLabel.textColor = Theme.Color.textSecondary
 
-        let titles = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
+        fridgeCaption.text = "目前使用的冰箱"
+        fridgeCaption.font = Theme.Font.caption
+        fridgeCaption.textColor = Theme.Color.textSecondary
+        configureFridgeSelector()
+        let titles = UIStackView(arrangedSubviews: [fridgeCaption, fridgeSelector, titleLabel, subtitleLabel])
         titles.axis = .vertical
         titles.spacing = 2
 
@@ -460,6 +492,7 @@ final class FridgeHomeViewController: UIViewController {
         for name in [Notification.Name.entitlementsDidChange, .adAvailabilityDidChange] {
             NotificationCenter.default.addObserver(self, selector: #selector(monetizationChanged), name: name, object: nil)
         }
+        NotificationCenter.default.addObserver(self, selector: #selector(fridgesChanged), name: .fridgesDidChange, object: nil)
         dashboardView.onSelectReminder = { [weak self] kind, storage in self?.openReminderCenter(kind: kind, storage: storage) }
         addFoodButton.addAction(UIAction { [weak self] _ in self?.openFoodEditor(.add(compartmentID: nil)) }, for: .touchUpInside)
         closeDoorButton.accessibilityLabel = "關上冰箱"
@@ -469,8 +502,16 @@ final class FridgeHomeViewController: UIViewController {
 
     private func render(animated: Bool) {
         let isOpen = fridge.lastDoorState == .open
-        titleLabel.text = isEditingLayout ? "編輯隔層" : "冰箱管理員"
-        subtitleLabel.text = isEditingLayout ? "輕點隔層調整，完成後儲存" : (isOpen ? displayedFridge.name : "今天也好好保存食材")
+        titleLabel.text = "編輯隔層"
+        subtitleLabel.text = "輕點隔層調整，完成後儲存"
+        titleLabel.isHidden = !isEditingLayout
+        subtitleLabel.isHidden = !isEditingLayout
+        fridgeCaption.isHidden = isEditingLayout
+        fridgeSelector.isHidden = isEditingLayout
+        var selectorConfig = fridgeSelector.configuration
+        selectorConfig?.title = fridge.name
+        fridgeSelector.configuration = selectorConfig
+        fridgeSelector.accessibilityLabel = "目前冰箱：" + fridge.name
         closeDoorButton.isHidden = !isOpen || isEditingLayout
         editButton.isHidden = !isOpen || isEditingLayout
         cancelButton.isHidden = !isEditingLayout
@@ -632,6 +673,10 @@ final class FridgeHomeViewController: UIViewController {
                                             compartments: { [weak self] in self?.fridge.allCompartments ?? [] })
         sheet.onAddFood = { [weak self, weak sheet] id in self?.openFoodEditor(.add(compartmentID: id), from: sheet) }
         sheet.onEditFood = { [weak self, weak sheet] id in self?.openFoodEditor(.edit(foodID: id), from: sheet) }
+        sheet.otherFridges = { [weak self] in
+            guard let self else { return [] }
+            return self.directory.fridges.filter { $0.id != self.fridge.id }
+        }
         foodListSheet = sheet
         present(sheet, animated: true)
     }
@@ -652,7 +697,19 @@ final class FridgeHomeViewController: UIViewController {
         let center = ReminderCenterViewController(inventory: inventory,
                                                   compartments: { [weak self] in self?.fridge.allCompartments ?? [] },
                                                   storageFilter: storage, kindFilter: kind)
-        center.onOpenFood = { [weak self, weak center] id in self?.openFood(id, from: center) }
+        center.allFridges = { [weak self] in
+            guard let self, let data = self.allFridgesData() else { return nil }
+            return .init(items: data.items, compartments: data.compartments,
+                         names: Dictionary(data.fridges.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a }))
+        }
+        center.onOpenFood = { [weak self, weak center] item in
+            guard let self else { return }
+            if item.fridgeID == self.fridge.id {
+                self.openFood(item.id, from: center)
+            } else {
+                self.switchFridge(to: item.fridgeID, then: .link(AppDeepLink(.food(item.id))))
+            }
+        }
         center.onOpenSettings = { [weak self, weak center] in self?.openNotificationSettings(from: center) }
         navigationController?.pushViewController(center, animated: true)
     }
@@ -669,11 +726,78 @@ final class FridgeHomeViewController: UIViewController {
         }
     }
 
+    // MARK: - Fridges
+
+    private func configureFridgeSelector() {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        config.imagePlacement = .trailing
+        config.imagePadding = 6
+        config.contentInsets = .zero
+        config.baseForegroundColor = Theme.Color.textPrimary
+        config.titleLineBreakMode = .byTruncatingTail
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var attrs = attrs
+            attrs.font = Theme.Font.title
+            return attrs
+        }
+        fridgeSelector.configuration = config
+        fridgeSelector.contentHorizontalAlignment = .leading
+        fridgeSelector.showsMenuAsPrimaryAction = true
+        fridgeSelector.accessibilityIdentifier = "home.fridgeSelector"
+        fridgeSelector.accessibilityHint = "點兩下切換或管理冰箱"
+        fridgeSelector.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Built on every open, so names, the check mark and the limit are always current.
+        fridgeSelector.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            completion(self?.fridgeMenuElements() ?? [])
+        }])
+    }
+
+    func fridgeMenuElements() -> [UIMenuElement] {
+        let fridges = directory.fridges.map { fridge in
+            UIAction(title: fridge.name, image: UIImage(systemName: "refrigerator"),
+                     state: fridge.id == self.fridge.id ? .on : .off) { [weak self] _ in
+                guard let self, fridge.id != self.fridge.id else { return }
+                self.switchFridge(to: fridge.id, then: nil)
+            }
+        }
+        let add = UIAction(title: "新增冰箱", image: UIImage(systemName: "plus")) { [weak self] _ in self?.addFridge() }
+        if !directory.canAddFridge {
+            add.attributes = .disabled
+            add.subtitle = FridgePolicy.limitMessage
+        }
+        let manage = UIAction(title: "管理冰箱", image: UIImage(systemName: "slider.horizontal.3")) { [weak self] _ in
+            guard let self, let management = self.makeFridgeManagement() else { return }
+            self.navigationController?.pushViewController(management, animated: true)
+        }
+        return [UIMenu(options: .displayInline, children: fridges), UIMenu(options: .displayInline, children: [add, manage])]
+    }
+
+    func addFridge() {
+        guard !isEditingLayout else { return }
+        FridgeActions.presentAdd(directory: directory, copyFrom: fridge, from: navigationController ?? self) { [weak self] created in
+            self?.switchFridge(to: created.id, then: nil)
+        }
+    }
+
+    func makeFridgeManagement() -> UIViewController? {
+        FridgeManagementViewController(directory: directory, currentFridgeID: { [weak self] in self?.fridge.id ?? UUID() },
+                                       onSelect: { [weak self] id in self?.switchFridge(to: id, then: nil) })
+    }
+
+    /// Hands over to the scene delegate, which shows the chosen fridge (its own layout, door state and food)
+    /// and remembers it for the next launch. Nothing of this fridge is changed.
+    func switchFridge(to id: UUID, then route: ExternalRoute?) {
+        guard !isEditingLayout else { return showRouteMessage("請先完成或取消隔層編輯") }
+        onSwitchFridge?(id, route)
+    }
+
     // MARK: - Settings & ads
 
     func openSettings() {
         guard !isEditingLayout else { return }
-        let settings = SettingsViewController(entitlements: entitlements, ads: ads, notifications: notifications)
+        let settings = SettingsViewController(entitlements: entitlements, ads: ads, notifications: notifications,
+                                              makeFridgeManagement: { [weak self] in self?.makeFridgeManagement() })
         navigationController?.pushViewController(settings, animated: true)
     }
 
@@ -732,14 +856,19 @@ final class FridgeHomeViewController: UIViewController {
     /// an open food editor or layout edit stays and the user is told to finish it first.
     func handle(_ route: ExternalRoute) {
         guard case let .link(link) = route else { return showRouteMessage("無法開啟這個連結，已回到冰箱") }
-        if let fridgeID = link.refrigeratorID, fridgeID != fridge.id {
-            return returnHome { $0.showRouteMessage("找不到這台冰箱，已回到冰箱") }
-        }
         if isEditingLayout { return showRouteMessage("請先完成或取消隔層編輯") }
         if let editor = presentedFoodEditor {
             // Repeated quick-add taps reuse the open add form instead of stacking another one.
-            if case .quickAdd = link.destination, editor.isAddMode { return }
+            if case .quickAdd = link.destination, editor.isAddMode, (link.refrigeratorID ?? fridge.id) == fridge.id { return }
             return showRouteMessage("請先完成目前的食材編輯")
+        }
+        if let fridgeID = link.refrigeratorID, fridgeID != fridge.id {
+            guard directory.contains(fridgeID) else {
+                return returnHome { $0.showRouteMessage("找不到這台冰箱，已回到目前的冰箱") }
+            }
+            // Another fridge: switch first, then open the destination there (compartment / food are validated
+            // against that fridge after the switch).
+            return switchFridge(to: fridgeID, then: .link(AppDeepLink(link.destination)))
         }
         returnHome { home in
             switch link.destination {
@@ -781,6 +910,8 @@ final class FridgeHomeViewController: UIViewController {
             finish()
         }
     }
+
+    func showMessage(_ message: String) { showRouteMessage(message) }
 
     private func showRouteMessage(_ message: String) {
         let top = navigationController?.topViewController ?? self

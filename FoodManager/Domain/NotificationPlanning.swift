@@ -67,6 +67,8 @@ struct PlannedNotification: Equatable {
     static let identifierPrefix = "food."
 
     let foodID: UUID
+    /// Fridge the food belongs to (so a tap opens the right fridge).
+    var fridgeID: UUID? = nil
     let kind: NotificationKind
     let fireDate: DateComponents
     let title: String
@@ -90,9 +92,16 @@ struct PlannedNotification: Equatable {
 enum NotificationPayload {
     static let foodIDKey = "foodID"
     static let kindKey = "kind"
+    static let fridgeIDKey = "fridgeID"
 
     static func userInfo(for planned: PlannedNotification) -> [String: String] {
-        [foodIDKey: planned.foodID.uuidString, kindKey: planned.kind.rawValue]
+        var info = [foodIDKey: planned.foodID.uuidString, kindKey: planned.kind.rawValue]
+        if let fridgeID = planned.fridgeID { info[fridgeIDKey] = fridgeID.uuidString }
+        return info
+    }
+
+    static func fridgeID(from userInfo: [AnyHashable: Any]) -> UUID? {
+        (userInfo[fridgeIDKey] as? String).flatMap(UUID.init(uuidString:))
     }
 
     static func foodID(from userInfo: [AnyHashable: Any]) -> UUID? {
@@ -146,7 +155,7 @@ struct NotificationPlanner {
         }
         let daysLeft = FoodDateCalculator(calendar: calendar).daysUntilExpiration(expiration, now: fire)
         let when = FoodFormatting.expirationText(.expiringSoon(daysLeft: max(0, daysLeft))) ?? ""
-        return (fire, PlannedNotification(foodID: item.id, kind: .expiration, fireDate: components(fire),
+        return (fire, PlannedNotification(foodID: item.id, fridgeID: item.fridgeID, kind: .expiration, fireDate: components(fire),
                                           title: "食材即將到期", body: "「\(item.name)」\(place)\(when)"))
     }
 
@@ -155,7 +164,7 @@ struct NotificationPlanner {
         guard let days = item.storageReminderDays,
               let dueDay = calendar.date(byAdding: .day, value: days, to: calendar.startOfDay(for: item.storedAt)),
               let fire = reminderTime(on: dueDay, preferences), fire > now else { return nil }
-        return (fire, PlannedNotification(foodID: item.id, kind: .storage, fireDate: components(fire),
+        return (fire, PlannedNotification(foodID: item.id, fridgeID: item.fridgeID, kind: .storage, fireDate: components(fire),
                                           title: "保存提醒", body: "「\(item.name)」\(place)已存放 \(days) 天，記得確認狀態"))
     }
 

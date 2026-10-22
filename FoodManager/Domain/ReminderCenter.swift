@@ -8,8 +8,13 @@ struct ReminderEntry: Equatable {
     let kinds: Set<FoodReminderKind>
     let expiration: ExpirationStatus
     let daysStored: Int
+    /// Set when reminders of several fridges are listed together, so every row shows where it lives.
+    var fridgeName: String? = nil
 
-    var locationText: String { compartment.map(CompartmentNaming.location) ?? "位置不存在" }
+    var locationText: String {
+        let place = compartment.map(CompartmentNaming.location) ?? "位置不存在"
+        return fridgeName.map { "\($0) · \(place)" } ?? place
+    }
 
     /// e.g. ["已過期 1 天", "已存放 30 天"].
     var statusTexts: [String] {
@@ -27,9 +32,15 @@ struct ReminderEntry: Equatable {
 struct ReminderCenterBuilder {
     var evaluator = FoodReminderEvaluator()
 
+    /// `fridgeNames` (all-fridges scope) labels each entry with its fridge.
     func entries(items: [FoodItem], compartments: [Compartment], storage: StorageFilter,
-                 kind: ReminderKindFilter, now: Date) -> [ReminderEntry] {
+                 kind: ReminderKindFilter, now: Date, fridgeNames: [UUID: String]? = nil) -> [ReminderEntry] {
         allEntries(items: items, compartments: compartments, storage: storage, now: now)
+            .map { entry in
+                var labelled = entry
+                labelled.fridgeName = fridgeNames?[entry.item.fridgeID] ?? (fridgeNames == nil ? nil : "冰箱已刪除")
+                return labelled
+            }
             .filter { kind.matches($0.kinds) }
             .sorted(by: Self.isMoreUrgent)
     }

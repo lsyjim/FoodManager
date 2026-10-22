@@ -63,17 +63,24 @@ final class WidgetSnapshotPublisher {
         if file == nil { logger.error("App Group container unavailable; widgets cannot be updated") }
     }
 
-    func publish(fridge: Fridge, items: [FoodItem], now: Date = Date()) {
-        guard let file else { return }
+    /// Publishes every fridge (food is split by `fridgeID`, so nothing shows under the wrong fridge).
+    func publish(fridges: [Fridge], items: [FoodItem], selectedFridgeID: UUID, now: Date = Date()) {
+        guard let file, !fridges.isEmpty else { return }
         queue.async { [self] in
-            let snapshot = WidgetSnapshotBuilder.build(fridge: fridge, items: items, now: now)
+            let bundle = WidgetSnapshotBundle(
+                bundleVersion: WidgetSnapshotBundle.currentVersion, generatedAt: now, selectedFridgeID: selectedFridgeID,
+                fridges: fridges.map { fridge in
+                    WidgetSnapshotBuilder.build(fridge: fridge, items: items.filter { $0.fridgeID == fridge.id }, now: now)
+                })
             do {
                 // Same content on the same day → nothing to do (avoids needless widget reloads).
-                var keyed = snapshot
-                keyed.generatedAt = calendar.startOfDay(for: now)
+                var keyed = bundle
+                let day = calendar.startOfDay(for: now)
+                keyed.generatedAt = day
+                for index in keyed.fridges.indices { keyed.fridges[index].generatedAt = day }
                 let key = try WidgetSnapshotFile.encode(keyed)
                 guard key != lastContentKey || file.read() == nil else { return }
-                try file.write(WidgetSnapshotFile.encode(snapshot))
+                try file.write(WidgetSnapshotFile.encode(bundle))
                 lastContentKey = key
                 DispatchQueue.main.async { self.reloader.reloadAll() }
             } catch {

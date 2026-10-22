@@ -65,7 +65,9 @@ final class SystemNotificationClient: NotificationClient {
 /// Call `reschedule()` after any food change, preference change, layout change or app activation.
 @MainActor
 final class NotificationCoordinator {
-    typealias Snapshot = () -> (items: [FoodItem], compartments: [Compartment])
+    /// Active food and compartments of *every* fridge. nil when they can't be read right now: then nothing
+    /// is rescheduled (so a read error never cancels another fridge's reminders).
+    typealias Snapshot = () -> (items: [FoodItem], compartments: [Compartment])?
 
     let preferencesStore: NotificationPreferencesStore
     private let client: NotificationClient
@@ -114,7 +116,7 @@ final class NotificationCoordinator {
     /// Replaces this app's pending food notifications with the current plan. Returns what is now scheduled.
     @discardableResult
     func reschedule() async -> [PlannedNotification] {
-        let (items, compartments) = snapshot()
+        guard let (items, compartments) = snapshot() else { return [] }
         let ours = await client.pendingIdentifiers().filter { $0.hasPrefix(PlannedNotification.identifierPrefix) }
         let activeIDs = Set(items.filter(\.isActive).map(\.id))
 

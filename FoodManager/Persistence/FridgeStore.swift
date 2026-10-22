@@ -5,6 +5,8 @@ import os
 enum FridgeStoreError: Error, Equatable {
     case fridgeNotFound
     case invalidLayout([LayoutValidationError])
+    /// The fridge still holds active food; it must be moved or consumed first.
+    case fridgeHasActiveFood(Int)
 }
 
 /// Persistence boundary for fridges. UI and editor depend on this protocol, not on SwiftData.
@@ -15,6 +17,14 @@ protocol FridgeStore: AnyObject {
     /// Validates and atomically replaces the fridge's name/template/layout.
     func saveLayout(_ fridge: Fridge) throws
     func saveDoorState(_ state: DoorState, fridgeID: UUID) throws
+    /// Every fridge, oldest first (creates the default fridge when there is none). Never rewrites stored data.
+    func loadAll() throws -> [FridgeLoadResult]
+    /// Inserts a new fridge with a validated layout.
+    func create(_ fridge: Fridge) throws
+    func rename(fridgeID: UUID, to name: String) throws
+    /// Deletes an empty fridge and, in the same save, hands its consumed-food history to `historyDestination`.
+    /// Throws `fridgeHasActiveFood` (and changes nothing) if active food still belongs to it.
+    func deleteFridge(_ fridgeID: UUID, moveHistoryTo historyDestination: UUID) throws
 }
 
 extension FridgeStore {
@@ -74,6 +84,40 @@ final class SwiftDataFridgeStore: FridgeStore {
     func saveDoorState(_ state: DoorState, fridgeID: UUID) throws {
         let record = try fetchRecord(id: fridgeID)
         record.lastDoorStateRaw = state.rawValue
+        try saveOrRollback()
+    }
+
+    func loadAll() throws -> [FridgeLoadResult] {
+        let records = try context.fetch(FetchDescriptor<FridgeRecord>(sortBy: [SortDescriptor(\.createdAt)]))
+        guard !records.isEmpty else { return [try load()] } // first launch: default fridge
+        return records.map(fridge(from:))
+    }
+
+    func create(_ fridge: Fridge) throws {
+        let errors = FridgeLayoutEngine.validate(fridge)
+        guard errors.isEmpty else { throw FridgeStoreError.invalidLayout(errors) }
+        context.insert(FridgeRecord(id: fridge.id, name: fridge.name, templateID: fridge.templateID,
+                                    lastDoorStateRaw: fridge.lastDoorState.rawValue, layoutData: try StoredLayout.encode(fridge)))
+        try saveOrRollback()
+    }
+
+    func rename(fridgeID: UUID, to name: String) throws {
+        let record = try fetchRecord(id: fridgeID)
+        record.name = name
+        record.updatedAt = .now
+        try saveOrRollback()
+    }
+
+    func deleteFridge(_ fridgeID: UUID, moveHistoryTo historyDestination: UUID) throws {
+        let record = try fetchRecord(id: fridgeID)
+        _ = try fetchRecord(id: historyDestination)
+        let food = try context.fetch(FetchDescriptor<FoodItemRecord>(predicate: #Predicate { $0.fridgeID == fridgeID }))
+        let active = food.filter { $0.consumedAt == nil }.count
+        guard active == 0 else { throw FridgeStoreError.fridgeHasActiveFood(active) }
+        // History is kept: it moves to the remaining fridge (its old compartment IDs no longer exist there,
+        // so restoring asks the user where to put it — nothing is placed silently).
+        for item in food { item.fridgeID = historyDestination }
+        context.delete(record)
         try saveOrRollback()
     }
 
