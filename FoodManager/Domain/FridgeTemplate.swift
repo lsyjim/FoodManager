@@ -19,7 +19,15 @@ struct FridgeTemplate: Equatable {
     let openImageSize: CGSize
     let cabinetEditableRect: NormalizedRect
     let doorEditableRect: NormalizedRect
+    /// Visible front of the closed door (inside the outline, excluding feet and side edge), normalized to the
+    /// closed image. Fridge magnets are positioned relative to this rect.
+    let closedDoorRect: NormalizedRect
     let defaultLayout: [ZoneID: [CompartmentSeed]]
+
+    /// Width / height of the closed door surface in points-independent units (used to keep magnet aspect ratios).
+    var closedDoorAspect: Double {
+        Double(closedDoorRect.width * closedImageSize.width) / Double(closedDoorRect.height * closedImageSize.height)
+    }
 
     func editableRect(for zone: ZoneID) -> NormalizedRect {
         switch zone {
@@ -41,6 +49,8 @@ extension FridgeTemplate {
         openImageSize: CGSize(width: 761, height: 654),
         cabinetEditableRect: NormalizedRect(x: 56.0 / 761, y: 48.0 / 654, width: 299.0 / 761, height: 520.0 / 654),
         doorEditableRect: NormalizedRect(x: 440.0 / 761, y: 56.0 / 654, width: 270.0 / 761, height: 526.0 / 654),
+        // `fridge_closed` (353×650): door front ≈ x 24…346, y 8…630 (outline measured at x 19–22 / 348–351, y 1–3 / 631–634).
+        closedDoorRect: NormalizedRect(x: 24.0 / 353, y: 8.0 / 650, width: 322.0 / 353, height: 622.0 / 650),
         defaultLayout: [
             .cabinet: [
                 CompartmentSeed(name: "上層", type: .shelf, storageType: .refrigerated, height: 0.22),

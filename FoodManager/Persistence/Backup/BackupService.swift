@@ -11,6 +11,8 @@ import os
 final class BackupService {
     private let inventory: InventoryBackupStore
     private let preferences: PreferencesBackupStore
+    /// Magnet photo files (nil: this store has no magnet images, e.g. in some tests).
+    private let magnetImages: MagnetImageStore?
     /// Where the pre-restore copy is kept (Application Support). nil for in-memory test sessions.
     private let recoveryDirectory: URL?
     private let exportDirectory: URL
@@ -21,12 +23,14 @@ final class BackupService {
 
     static let recoveryFileName = "PreRestore-Backup.json"
 
-    init(inventory: InventoryBackupStore, preferences: PreferencesBackupStore, recoveryDirectory: URL?,
+    init(inventory: InventoryBackupStore, preferences: PreferencesBackupStore, magnetImages: MagnetImageStore? = nil,
+         recoveryDirectory: URL?,
          exportDirectory: URL = FileManager.default.temporaryDirectory.appendingPathComponent("BackupExport", isDirectory: true),
          now: @escaping () -> Date = Date.init,
          applicationVersion: String = BackupService.bundleVersion) {
         self.inventory = inventory
         self.preferences = preferences
+        self.magnetImages = magnetImages
         self.recoveryDirectory = recoveryDirectory
         self.exportDirectory = exportDirectory
         self.now = now
@@ -50,8 +54,9 @@ final class BackupService {
     // MARK: - Export
 
     /// Everything currently stored, validated with the same rules as an import.
+    /// Throws `magnetImageMissing` rather than exporting a backup without a photo.
     func makeBackup() throws -> FoodManagerBackup {
-        let backup = try currentBackup()
+        let backup = try currentBackup(requireImages: true)
         try BackupValidator.validate(backup)
         return backup
     }
@@ -118,39 +123,47 @@ final class BackupService {
         try BackupValidator.validate(backup)
         let target = Self.canonical(backup)
 
-        // 1. Recovery snapshot, in memory and on disk, before anything changes.
+        // 1. Recovery snapshot, in memory and on disk, before anything changes. A photo whose file is already
+        //    missing can't be part of it; that doesn't block the restore.
         let previous: FoodManagerBackup
         do {
-            previous = try currentBackup()
+            previous = try currentBackup(requireImages: false)
         } catch {
             throw BackupError.currentDataUnreadable
         }
         try writeRecoveryFile(previous)
 
-        // 2. Database: one save. If it fails, SwiftData rolled it back and nothing changed.
+        // 2. Magnet photos first (new files only add; nothing references them until the database says so),
+        //    then the database in one save. If either fails, the stored data is unchanged.
         do {
-            try inventory.replaceInventory(fridges: target.fridges, foods: target.foods)
+            try writeImages(target.allMagnetImages)
+            try inventory.replaceInventory(Self.inventory(of: target))
         } catch {
             logger.error("Restore: database replace failed: \(String(describing: error), privacy: .private)")
+            removeUnreferencedImages()
             throw BackupError.saveFailed
         }
 
         // 3. Preferences, then 4. verify everything by reading it back.
         do {
             try preferences.writePreferences(target.preferences)
-            guard try currentBackup().hasSameContent(as: target) else { throw BackupError.saveFailed }
+            guard try currentBackup(requireImages: false).hasSameContent(as: target) else { throw BackupError.saveFailed }
         } catch {
             logger.error("Restore failed after the database changed; rolling back: \(String(describing: error), privacy: .private)")
-            throw BackupError.restoreFailed(rolledBack: rollBack(to: previous))
+            let rolledBack = rollBack(to: previous)
+            removeUnreferencedImages()
+            throw BackupError.restoreFailed(rolledBack: rolledBack)
         }
+        removeUnreferencedImages()
     }
 
     /// Writes the snapshot back. Returns whether the previous data is verifiably back.
     private func rollBack(to previous: FoodManagerBackup) -> Bool {
         do {
-            try inventory.replaceInventory(fridges: previous.fridges, foods: previous.foods)
+            try writeImages(previous.allMagnetImages)
+            try inventory.replaceInventory(Self.inventory(of: previous))
             try preferences.writePreferences(previous.preferences)
-            return try currentBackup().hasSameContent(as: previous)
+            return try currentBackup(requireImages: false).hasSameContent(as: previous)
         } catch {
             logger.error("Restore rollback failed: \(String(describing: error), privacy: .private)")
             return false
@@ -168,11 +181,34 @@ final class BackupService {
         }
     }
 
-    private func currentBackup() throws -> FoodManagerBackup {
+    private func currentBackup(requireImages: Bool) throws -> FoodManagerBackup {
         let stored = try inventory.readInventory()
+        var images: [BackupMagnetImage] = []
+        for id in Set(stored.magnets.compactMap(\.localImageID)).sorted(by: { $0.uuidString < $1.uuidString }) {
+            if let data = magnetImages?.data(id) {
+                images.append(BackupMagnetImage(id: id, data: data))
+            } else if requireImages {
+                throw BackupError.magnetImageMissing
+            }
+        }
         return FoodManagerBackup(formatVersion: FoodManagerBackup.currentFormatVersion, exportedAt: now(),
                                  applicationVersion: applicationVersion, backupID: UUID(),
-                                 fridges: stored.fridges, foods: stored.foods, preferences: preferences.readPreferences())
+                                 fridges: stored.fridges, foods: stored.foods, preferences: preferences.readPreferences(),
+                                 magnets: stored.magnets, magnetImages: images)
+    }
+
+    private static func inventory(of backup: FoodManagerBackup) -> StoredInventory {
+        StoredInventory(fridges: backup.fridges, foods: backup.foods, magnets: backup.allMagnets)
+    }
+
+    private func writeImages(_ images: [BackupMagnetImage]) throws {
+        guard let magnetImages else { return }
+        for image in images { try magnetImages.storeImageData(image.data, id: image.id) }
+    }
+
+    private func removeUnreferencedImages() {
+        guard let magnetImages, let stored = try? inventory.readInventory() else { return }
+        magnetImages.removeUnreferenced(keeping: Set(stored.magnets.compactMap(\.localImageID)))
     }
 
     /// The exact form the stores read back: quantities re-encoded ("1.50" → "1.5"), and a selected fridge
@@ -181,6 +217,10 @@ final class BackupService {
         var result = backup
         result.fridges = backup.fridges.map { BackupFridge($0.fridge, createdAt: $0.createdAt) }
         result.foods = backup.foods.map { BackupFood($0.item) }
+        result.magnets = backup.allMagnets
+        // Only photos some magnet uses are stored (and read back).
+        let used = Set(backup.allMagnets.compactMap(\.localImageID))
+        result.magnetImages = backup.allMagnetImages.filter { used.contains($0.id) }
         let ids = Set(backup.fridges.map(\.id))
         if backup.preferences.selectedFridgeID.map(ids.contains) != true {
             result.preferences.selectedFridgeID = backup.fridges.min { $0.createdAt < $1.createdAt }?.id

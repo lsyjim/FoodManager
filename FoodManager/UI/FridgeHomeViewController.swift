@@ -14,6 +14,14 @@ final class FridgeHomeViewController: UIViewController {
     /// The argument is nil on success, else the failure message to show.
     var onDataRestored: ((String?) -> Void)?
     private let makeBackupService: () -> BackupService
+    private let magnetLibrary: MagnetLibrary
+    /// Magnets on the closed door: display only, so taps still open the fridge.
+    private lazy var magnetBoard = MagnetBoardView(template: template, library: magnetLibrary)
+    private lazy var decorateButton: UIButton = {
+        let button = UIButton.sketchButton(title: "裝飾冰箱", systemImage: "sparkles")
+        button.accessibilityIdentifier = "home.decorate"
+        return button
+    }()
     /// Food rules always validate against the *persisted* layout, never an unsaved edit.
     private lazy var inventory = FoodInventoryService(store: foodStore, fridgeID: fridge.id,
                                                       compartments: { [weak self] in self?.fridge.allCompartments ?? [] })
@@ -113,6 +121,7 @@ final class FridgeHomeViewController: UIViewController {
         directory = session.directory
         foodStore = session.foodStore
         makeBackupService = { session.makeBackupService() }
+        magnetLibrary = session.magnets
         fridge = session.loadResult.fridge
         layoutRecovery = session.loadResult.recovery
         self.template = FridgeTemplateCatalog.template(id: fridge.templateID)
@@ -143,6 +152,31 @@ final class FridgeHomeViewController: UIViewController {
         center.addObserver(self, selector: #selector(reminderConfigured), name: .foodReminderConfigured, object: nil)
         notifications.scheduleUpdate()
         publishWidgetSnapshot()
+        reloadMagnets()
+    }
+
+    // MARK: - Magnets
+
+    /// Shows this fridge's saved magnets on the closed door. A read failure leaves the door plain (never wrong).
+    private func reloadMagnets() {
+        magnetBoard.render((try? magnetLibrary.magnets(fridgeID: fridge.id)) ?? [])
+    }
+
+    func openMagnetEditor() {
+        guard !isEditingLayout, presentedViewController == nil else { return }
+        let magnets: [FridgeMagnet]
+        do {
+            magnets = try magnetLibrary.magnets(fridgeID: fridge.id)
+        } catch {
+            showAlert(title: "無法讀取磁鐵", message: "請再試一次。")
+            return
+        }
+        let editor = MagnetEditorViewController(fridge: fridge, library: magnetLibrary, magnets: magnets)
+        editor.onSaved = { [weak self] in
+            self?.reloadMagnets()
+            self?.showRouteMessage("已儲存冰箱裝飾")
+        }
+        present(editor, animated: true)
     }
 
     /// Contextual permission prompt: offered once, right after the user sets an expiry or storage reminder.
@@ -409,11 +443,14 @@ final class FridgeHomeViewController: UIViewController {
         hint.textColor = Theme.Color.textSecondary
         hint.textAlignment = .center
 
-        for subview in [closedFridgeButton, dashboardView, hint] as [UIView] {
+        for subview in [closedFridgeButton, magnetBoard, dashboardView, hint, decorateButton] as [UIView] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             closedContainer.addSubview(subview)
         }
         let c = closedContainer
+        // On short screens the dashboard moves up to make room for 裝飾冰箱 below it.
+        let dashboardCentered = dashboardView.centerYAnchor.constraint(equalTo: closedFridgeButton.centerYAnchor)
+        dashboardCentered.priority = .defaultHigh
         // Fridge takes ~55% of the width but never exceeds the available height.
         let preferredWidth = closedFridgeButton.widthAnchor.constraint(equalTo: c.widthAnchor, multiplier: 0.55)
         preferredWidth.priority = .defaultHigh
@@ -432,7 +469,18 @@ final class FridgeHomeViewController: UIViewController {
             dashboardView.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -Theme.Metric.gutter),
             // Room for the 全部/冷藏/冷凍 switch; the fridge's preferred width yields first.
             dashboardView.widthAnchor.constraint(greaterThanOrEqualToConstant: 132),
-            dashboardView.centerYAnchor.constraint(equalTo: closedFridgeButton.centerYAnchor),
+            dashboardCentered,
+
+            // Exactly over the artwork, so the board can find the door surface inside it.
+            magnetBoard.topAnchor.constraint(equalTo: closedFridgeButton.topAnchor),
+            magnetBoard.leadingAnchor.constraint(equalTo: closedFridgeButton.leadingAnchor),
+            magnetBoard.trailingAnchor.constraint(equalTo: closedFridgeButton.trailingAnchor),
+            magnetBoard.bottomAnchor.constraint(equalTo: closedFridgeButton.bottomAnchor),
+
+            decorateButton.leadingAnchor.constraint(equalTo: dashboardView.leadingAnchor),
+            decorateButton.trailingAnchor.constraint(lessThanOrEqualTo: dashboardView.trailingAnchor),
+            decorateButton.bottomAnchor.constraint(equalTo: closedFridgeButton.bottomAnchor),
+            dashboardView.bottomAnchor.constraint(lessThanOrEqualTo: decorateButton.topAnchor, constant: -12),
         ])
     }
 
@@ -500,6 +548,7 @@ final class FridgeHomeViewController: UIViewController {
 
     private func wireActions() {
         closedFridgeButton.addAction(UIAction { [weak self] _ in self?.setDoor(.open) }, for: .touchUpInside)
+        decorateButton.addAction(UIAction { [weak self] _ in self?.openMagnetEditor() }, for: .touchUpInside)
         closeDoorButton.addAction(UIAction { [weak self] _ in self?.setDoor(.closed) }, for: .touchUpInside)
         editButton.addAction(UIAction { [weak self] _ in self?.beginEditing() }, for: .touchUpInside)
         cancelButton.addAction(UIAction { [weak self] _ in self?.cancelTapped() }, for: .touchUpInside)

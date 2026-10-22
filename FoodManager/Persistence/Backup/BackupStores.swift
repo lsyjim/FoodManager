@@ -2,10 +2,17 @@ import Foundation
 import SwiftData
 
 /// Fridges and food as backup DTOs. Kept separate from `FridgeStore` / `FoodStore`, which work one record at a time.
+/// Everything kept in the database.
+struct StoredInventory: Equatable {
+    var fridges: [BackupFridge]
+    var foods: [BackupFood]
+    var magnets: [FridgeMagnet] = []
+}
+
 protocol InventoryBackupStore: AnyObject {
-    func readInventory() throws -> (fridges: [BackupFridge], foods: [BackupFood])
-    /// Replaces every fridge and food record in ONE save: either all of it is committed or none of it.
-    func replaceInventory(fridges: [BackupFridge], foods: [BackupFood]) throws
+    func readInventory() throws -> StoredInventory
+    /// Replaces every fridge, food and magnet record in ONE save: either all of it is committed or none of it.
+    func replaceInventory(_ inventory: StoredInventory) throws
 }
 
 /// Preferences kept in UserDefaults (not part of the database).
@@ -24,7 +31,7 @@ final class SwiftDataInventoryBackupStore: InventoryBackupStore {
 
     init(container: ModelContainer) { self.container = container }
 
-    func readInventory() throws -> (fridges: [BackupFridge], foods: [BackupFood]) {
+    func readInventory() throws -> StoredInventory {
         // A fresh context every time, so nothing cached from an earlier read or a failed save leaks in.
         let context = ModelContext(container)
         let records = try context.fetch(FetchDescriptor<FridgeRecord>(sortBy: [SortDescriptor(\.createdAt)]))
@@ -34,10 +41,13 @@ final class SwiftDataInventoryBackupStore: InventoryBackupStore {
             BackupFridge($0.fridge, createdAt: createdAt[$0.fridge.id] ?? .now)
         }
         let foods = try context.fetch(FetchDescriptor<FoodItemRecord>()).map { BackupFood($0.item) }
-        return (fridges, foods)
+        let magnets = try context.fetch(FetchDescriptor<MagnetRecord>()).map(\.magnet)
+        return StoredInventory(fridges: fridges, foods: foods, magnets: magnets)
     }
 
-    func replaceInventory(fridges: [BackupFridge], foods: [BackupFood]) throws {
+    func replaceInventory(_ inventory: StoredInventory) throws {
+        let fridges = inventory.fridges
+        let foods = inventory.foods
         let context = ModelContext(container)
         context.autosaveEnabled = false
         let now = Date()
@@ -78,6 +88,14 @@ final class SwiftDataInventoryBackupStore: InventoryBackupStore {
             } else {
                 context.insert(FoodItemRecord(item))
             }
+        }
+
+        let existingMagnets = Dictionary(try context.fetch(FetchDescriptor<MagnetRecord>()).map { ($0.id, $0) },
+                                         uniquingKeysWith: { first, _ in first })
+        let keptMagnets = Set(inventory.magnets.map(\.id))
+        for (id, record) in existingMagnets where !keptMagnets.contains(id) { context.delete(record) }
+        for magnet in inventory.magnets {
+            if let record = existingMagnets[magnet.id] { record.apply(magnet) } else { context.insert(MagnetRecord(magnet)) }
         }
 
         do {

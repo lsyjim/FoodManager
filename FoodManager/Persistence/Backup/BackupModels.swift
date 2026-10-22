@@ -4,8 +4,13 @@ import Foundation
 /// even if internal storage changes. Not encrypted: it is readable JSON.
 ///
 /// Excluded on purpose: StoreKit transactions, ad identifiers, widget snapshots, caches, Debug switches.
+///
+/// Format history:
+/// - 1 (Phase 4.2): fridges, foods, preferences.
+/// - 2 (Phase 4.3): adds `magnets` and `magnetImages` (photo bytes embedded, so the file is self-contained).
+///   Both are optional in the file, so version-1 backups still import (as "no magnets").
 struct FoodManagerBackup: Codable, Equatable {
-    static let currentFormatVersion = 1
+    static let currentFormatVersion = 2
 
     var formatVersion: Int
     var exportedAt: Date
@@ -15,12 +20,21 @@ struct FoodManagerBackup: Codable, Equatable {
     /// Active food and consumed history (history has `consumedAt`).
     var foods: [BackupFood]
     var preferences: BackupPreferences
+    /// Fridge magnets (nil in version-1 files).
+    var magnets: [FridgeMagnet]?
+    /// Photo bytes for photo magnets, one entry per image ID (shared by duplicated magnets).
+    var magnetImages: [BackupMagnetImage]?
+
+    var allMagnets: [FridgeMagnet] { magnets ?? [] }
+    var allMagnetImages: [BackupMagnetImage] { magnetImages ?? [] }
 
     /// Everything except the per-file metadata; two backups with equal content restore the same state.
     func hasSameContent(as other: FoodManagerBackup) -> Bool {
         fridges.sorted { $0.id.uuidString < $1.id.uuidString } == other.fridges.sorted { $0.id.uuidString < $1.id.uuidString }
             && foods.sorted { $0.id.uuidString < $1.id.uuidString } == other.foods.sorted { $0.id.uuidString < $1.id.uuidString }
             && preferences == other.preferences
+            && allMagnets.sorted { $0.id.uuidString < $1.id.uuidString } == other.allMagnets.sorted { $0.id.uuidString < $1.id.uuidString }
+            && allMagnetImages.sorted { $0.id.uuidString < $1.id.uuidString } == other.allMagnetImages.sorted { $0.id.uuidString < $1.id.uuidString }
     }
 }
 
@@ -124,6 +138,12 @@ struct BackupFood: Codable, Equatable {
                  fridgeID: fridgeID, compartmentID: compartmentID, createdAt: createdAt, updatedAt: updatedAt,
                  consumedAt: consumedAt)
     }
+}
+
+struct BackupMagnetImage: Codable, Equatable {
+    var id: UUID
+    /// The stored display-size image (PNG or JPEG), base64 in JSON.
+    var data: Data
 }
 
 struct BackupPreferences: Codable, Equatable {

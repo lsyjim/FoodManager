@@ -106,6 +106,7 @@ final class BackupPreviewViewController: UITableViewController {
                 ("目前食材", "\(summary.activeFoodCount) 筆"),
                 ("食用紀錄", "\(summary.historyCount) 筆"),
                 ("常用食材", "\(summary.favoriteFoodCount) 個"),
+                ("冰箱磁鐵", "\(summary.magnetCount) 個"),
                 ("相容性", compatibility)]
     }
 
@@ -114,7 +115,7 @@ final class BackupPreviewViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { section == 0 ? "備份內容" : nil }
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        section == 0 ? nil : "還原會「取代」目前所有的冰箱、隔層、食材、食用紀錄與偏好設定，不會合併。還原前會先自動保留一份目前資料的保護副本；若還原失敗會恢復成原本的資料。"
+        section == 0 ? nil : "還原會「取代」目前所有的冰箱、隔層、食材、食用紀錄、冰箱磁鐵與偏好設定，不會合併。還原前會先自動保留一份目前資料的保護副本；若還原失敗會恢復成原本的資料。"
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {

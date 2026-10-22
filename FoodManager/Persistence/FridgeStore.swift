@@ -44,7 +44,8 @@ final class SwiftDataFridgeStore: FridgeStore {
     static func makeContainer(inMemory: Bool = false, url: URL? = nil) throws -> ModelContainer {
         // Phase 2 adds FoodItemRecord as a new, independent entity. Adding an entity is a lightweight,
         // non-destructive migration: existing FridgeRecord rows are kept as-is.
-        let schema = Schema([FridgeRecord.self, FoodItemRecord.self])
+        // Phase 4.3 adds MagnetRecord the same way (new entity, existing rows untouched).
+        let schema = Schema([FridgeRecord.self, FoodItemRecord.self, MagnetRecord.self])
         let configuration: ModelConfiguration
         if let url {
             configuration = ModelConfiguration(schema: schema, url: url)
@@ -117,6 +118,10 @@ final class SwiftDataFridgeStore: FridgeStore {
         // History is kept: it moves to the remaining fridge (its old compartment IDs no longer exist there,
         // so restoring asks the user where to put it — nothing is placed silently).
         for item in food { item.fridgeID = historyDestination }
+        // Its magnets go in the same save; their image files are cleaned up only after it succeeded.
+        for magnet in try context.fetch(FetchDescriptor<MagnetRecord>(predicate: #Predicate { $0.fridgeID == fridgeID })) {
+            context.delete(magnet)
+        }
         context.delete(record)
         try saveOrRollback()
     }

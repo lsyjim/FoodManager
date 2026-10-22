@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 
 enum BackupError: Error, Equatable {
     case fileTooLarge(Int)
@@ -14,6 +15,9 @@ enum BackupError: Error, Equatable {
     case invalidFood(String)
     case invalidCompartmentReference(String)
     case invalidPreferences
+    case invalidMagnets
+    /// Export only: a photo magnet's image file is missing, so a complete backup can't be written.
+    case magnetImageMissing
     /// Current data couldn't be read, so no recovery snapshot exists: nothing was changed.
     case currentDataUnreadable
     /// The recovery copy couldn't be written (e.g. no free space): nothing was changed.
@@ -41,6 +45,8 @@ enum BackupError: Error, Equatable {
         case let .invalidFood(name): return "食材「\(name)」的資料無效，檔案可能已損壞。"
         case let .invalidCompartmentReference(name): return "食材「\(name)」所在的冰箱或隔層不存在，檔案可能已損壞。"
         case .invalidPreferences: return "備份內的偏好設定無效，檔案可能已損壞。"
+        case .invalidMagnets: return "備份內的冰箱磁鐵資料無效，檔案可能已損壞。"
+        case .magnetImageMissing: return "有磁鐵照片遺失，無法建立完整備份。請在「裝飾冰箱」刪除或重新加入該磁鐵後再匯出。"
         case .currentDataUnreadable: return "無法讀取目前的資料，為了安全沒有進行還原。"
         case .recoverySnapshotFailed: return "無法建立還原前的保護副本（可能是儲存空間不足），沒有進行還原。"
         case .saveFailed: return "還原時儲存失敗，目前的資料沒有變更。"
@@ -60,13 +66,17 @@ struct BackupSummary: Equatable {
     let activeFoodCount: Int
     let historyCount: Int
     let favoriteFoodCount: Int
+    let magnetCount: Int
     /// Category IDs this build doesn't know (kept as-is; shown as 其他).
     let unknownCategoryCount: Int
 }
 
 /// Decodes and fully validates a backup without touching any stored data.
 enum BackupValidator {
-    static let maxFileSize = 20 * 1_048_576
+    /// Includes embedded magnet photos (base64): up to ~60 photos of ~0.5 MB.
+    static let maxFileSize = 60 * 1_048_576
+    static let maxMagnetImageBytes = 4 * 1_048_576
+    static let maxMagnetImages = 150
     static let maxFoodRecords = 50_000
     static let maxFavoriteFoods = 200
     static let earliestDate = Date(timeIntervalSince1970: 0)
@@ -103,7 +113,9 @@ enum BackupValidator {
         let compartmentIDs = backup.fridges.flatMap { $0.allCompartments.map(\.id) }
         let foodIDs = backup.foods.map(\.id)
         let favoriteIDs = backup.preferences.favoriteFoods.map(\.id)
-        for ids in [fridgeIDs, compartmentIDs, foodIDs, favoriteIDs] where Set(ids).count != ids.count {
+        let magnetIDs = backup.allMagnets.map(\.id)
+        let imageIDs = backup.allMagnetImages.map(\.id)
+        for ids in [fridgeIDs, compartmentIDs, foodIDs, favoriteIDs, magnetIDs, imageIDs] where Set(ids).count != ids.count {
             throw BackupError.duplicateIDs
         }
         guard Set(fridgeIDs).isDisjoint(with: compartmentIDs) else { throw BackupError.duplicateIDs }
@@ -136,6 +148,8 @@ enum BackupValidator {
             }
         }
 
+        try validateMagnets(backup, fridgeIDs: knownFridges)
+
         let preferences = backup.preferences
         let categoryIDs = preferences.favoriteCategoryIDs
         guard categoryIDs.count <= 50, Set(categoryIDs).count == categoryIDs.count,
@@ -154,7 +168,32 @@ enum BackupValidator {
                       activeFoodCount: backup.foods.filter { $0.consumedAt == nil }.count,
                       historyCount: backup.foods.filter { $0.consumedAt != nil }.count,
                       favoriteFoodCount: backup.preferences.favoriteFoods.count,
+                      magnetCount: backup.allMagnets.count,
                       unknownCategoryCount: backup.foods.filter { !FoodCategoryCatalog.contains($0.categoryID) }.count)
+    }
+
+    private static func validateMagnets(_ backup: FoodManagerBackup, fridgeIDs: Set<UUID>) throws {
+        let images = backup.allMagnetImages
+        guard images.count <= maxMagnetImages else { throw BackupError.tooManyRecords }
+        let perFridge = Dictionary(grouping: backup.allMagnets, by: \.fridgeID)
+        guard perFridge.values.allSatisfy({ $0.count <= MagnetDraft.maxMagnets }) else { throw BackupError.tooManyRecords }
+        let imageIDs = Set(images.map(\.id))
+        for magnet in backup.allMagnets {
+            guard fridgeIDs.contains(magnet.fridgeID), MagnetGeometry.isValid(magnet),
+                  validDate(magnet.createdAt), validDate(magnet.updatedAt),
+                  magnet.builtInAssetID.map({ $0.count <= 64 }) ?? true,
+                  magnet.source == .builtIn || magnet.localImageID.map(imageIDs.contains) == true else {
+                throw BackupError.invalidMagnets
+            }
+        }
+        // Every embedded photo must be a real, reasonably sized image (checked without decoding pixels).
+        for image in images {
+            guard image.data.count <= maxMagnetImageBytes,
+                  let source = CGImageSourceCreateWithData(image.data as CFData, nil),
+                  CGImageSourceGetCount(source) > 0, CGImageSourceGetType(source) != nil else {
+                throw BackupError.invalidMagnets
+            }
+        }
     }
 
     private static func validateFields(_ food: BackupFood) throws {

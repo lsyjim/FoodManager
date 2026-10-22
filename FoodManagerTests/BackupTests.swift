@@ -17,7 +17,7 @@ final class FlakyInventoryBackupStore: InventoryBackupStore {
 
     init(base: InventoryBackupStore) { self.base = base }
 
-    func readInventory() throws -> (fridges: [BackupFridge], foods: [BackupFood]) {
+    func readInventory() throws -> StoredInventory {
         if let remaining = failReadAfter {
             if remaining == 0 { failReadAfter = nil; throw Failure() }
             failReadAfter = remaining - 1
@@ -25,15 +25,17 @@ final class FlakyInventoryBackupStore: InventoryBackupStore {
         return try base.readInventory()
     }
 
-    func replaceInventory(fridges: [BackupFridge], foods: [BackupFood]) throws {
+    func replaceInventory(_ inventory: StoredInventory) throws {
         replaceCount += 1
         if failReplaces > 0 { failReplaces -= 1; throw Failure() }
         if corruptNextReplace {
             corruptNextReplace = false
-            try base.replaceInventory(fridges: fridges, foods: Array(foods.dropLast()))
+            var corrupted = inventory
+            corrupted.foods = Array(inventory.foods.dropLast())
+            try base.replaceInventory(corrupted)
             return
         }
-        try base.replaceInventory(fridges: fridges, foods: foods)
+        try base.replaceInventory(inventory)
     }
 }
 
@@ -150,7 +152,7 @@ final class BackupTests: XCTestCase {
         try seedTwoFridges()
         let backup = try service.makeBackup()
         let json = try jsonObject(backup)
-        XCTAssertEqual(json["formatVersion"] as? Int, 1)
+        XCTAssertEqual(json["formatVersion"] as? Int, FoodManagerBackup.currentFormatVersion)
         XCTAssertEqual(json["applicationVersion"] as? String, "test")
         XCTAssertNotNil(json["backupID"])
         XCTAssertNotNil(json["exportedAt"])
@@ -179,9 +181,9 @@ final class BackupTests: XCTestCase {
         json["formatVersion"] = 0
         XCTAssertThrowsError(try BackupValidator.decode(data(json))) { XCTAssertEqual($0 as? BackupError, .unsupportedVersion(0)) }
         // A future format is reported as such even if its fields changed shape.
-        let future = try data(["formatVersion": 2, "somethingNew": true])
+        let future = try data(["formatVersion": 3, "somethingNew": true])
         XCTAssertThrowsError(try BackupValidator.decode(future)) {
-            XCTAssertEqual($0 as? BackupError, .unsupportedVersion(2))
+            XCTAssertEqual($0 as? BackupError, .unsupportedVersion(3))
             XCTAssertTrue(($0 as? BackupError)?.message.contains("更新") == true)
         }
         XCTAssertThrowsError(try BackupValidator.decode(data(["fridges": []]))) { XCTAssertEqual($0 as? BackupError, .notABackup) }

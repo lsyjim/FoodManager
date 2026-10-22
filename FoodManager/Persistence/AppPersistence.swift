@@ -66,18 +66,20 @@ struct AppSession {
     /// The one open container (a restore rebuilds the session from it; a second container is never opened).
     let container: ModelContainer
     let selection: FridgeSelectionStore
+    let magnets: MagnetLibrary
 
     /// Same storage, another fridge (re-reads stored fridges so door states and layouts are current).
     func selecting(_ fridgeID: UUID) throws -> AppSession {
         try directory.select(fridgeID)
         return AppSession(fridgeStore: fridgeStore, foodStore: foodStore, loadResult: directory.selected,
-                          mode: mode, directory: directory, container: container, selection: selection)
+                          mode: mode, directory: directory, container: container, selection: selection, magnets: magnets)
     }
 
     /// Backup service over this session's storage and preferences.
     func makeBackupService(defaults: UserDefaults = .standard) -> BackupService {
         BackupService(inventory: SwiftDataInventoryBackupStore(container: container),
                       preferences: UserDefaultsPreferencesBackupStore(defaults: defaults, selection: selection),
+                      magnetImages: magnets.images,
                       recoveryDirectory: mode == .persistent ? BackupService.defaultRecoveryDirectory : nil)
     }
 }
@@ -101,8 +103,15 @@ enum AppBootstrap {
         let foodStore = SwiftDataFoodStore(container: container)
         do {
             let directory = try FridgeDirectory(fridgeStore: fridgeStore, foodStore: foodStore, selection: selection)
+            // Test sessions keep magnet photos in a temporary folder, never in the user's data.
+            let imageDirectory = mode == .persistent
+                ? MagnetImageStore.defaultDirectory
+                : FileManager.default.temporaryDirectory.appendingPathComponent("TestMagnets", isDirectory: true)
+            let magnets = MagnetLibrary(store: SwiftDataMagnetStore(container: container), images: MagnetImageStore(directory: imageDirectory))
+            directory.onFridgeDeleted = { magnets.removeUnreferencedImages() }
             return .success(AppSession(fridgeStore: fridgeStore, foodStore: foodStore, loadResult: directory.selected,
-                                       mode: mode, directory: directory, container: container, selection: selection))
+                                       mode: mode, directory: directory, container: container, selection: selection,
+                                       magnets: magnets))
         } catch {
             Logger(subsystem: "FoodManager.HowCode", category: "Persistence")
                 .error("Fridge load failed: \(String(describing: error), privacy: .private)")

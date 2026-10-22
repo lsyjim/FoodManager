@@ -62,6 +62,8 @@ struct FridgeDeletionSummary: Equatable {
 /// All of the user's fridges (at most `FridgePolicy.maxRefrigerators`) and which one is selected.
 /// Every change is persisted first; the cached list only updates after a successful save.
 final class FridgeDirectory {
+    /// Runs after a fridge was deleted from storage (removes magnet photos nothing uses any more).
+    var onFridgeDeleted: (() -> Void)?
     let fridgeStore: FridgeStore
     let foodStore: FoodStore
     private let selection: FridgeSelectionStore
@@ -150,6 +152,7 @@ final class FridgeDirectory {
             throw FridgeDirectoryError.hasActiveFood(count)
         }
         if selection.selectedFridgeID == id { selection.selectedFridgeID = summary.remainingFridge.id }
+        onFridgeDeleted?()
         try reload()
         post()
     }
