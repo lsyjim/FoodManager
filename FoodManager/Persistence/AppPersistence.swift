@@ -27,16 +27,42 @@ final class AppPersistence {
     typealias ContainerFactory = () throws -> ModelContainer
 
     let mode: PersistenceMode
+    /// Whether the last successful `open()` mirrors the store to iCloud.
+    private(set) var isCloudActive = false
+    /// Why sync couldn't start (shown in 設定), e.g. the pre-sync protection copy failed.
+    private(set) var cloudProblem: String?
     private let factory: ContainerFactory
+    private let cloudFactory: (() throws -> (ModelContainer, Bool, String?))?
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "Persistence")
 
     init(mode: PersistenceMode, factory: @escaping ContainerFactory) {
         self.mode = mode
         self.factory = factory
+        cloudFactory = nil
     }
 
-    static func production() -> AppPersistence {
-        AppPersistence(mode: .persistent) { try SwiftDataFridgeStore.makeContainer(inMemory: false) }
+    /// `cloudFactory` returns the container, whether CloudKit is on, and a problem to show.
+    /// (`cloudAware` only keeps this initializer apart from the trailing-closure one above.)
+    init(mode: PersistenceMode, openingWithCloud cloudFactory: @escaping () throws -> (ModelContainer, Bool, String?), cloudAware: Bool) {
+        self.mode = mode
+        self.cloudFactory = cloudFactory
+        factory = { try cloudFactory().0 }
+    }
+
+    /// The user's store, mirrored to their private iCloud database when sync is on and the one-time protection
+    /// copy succeeded. Without iCloud (signed out, offline, disabled) the same store keeps working locally.
+    static func production(settings: CloudSyncSettings = .shared, snapshots: ProtectionSnapshots = .shared) -> AppPersistence {
+        AppPersistence(mode: .persistent, openingWithCloud: {
+            guard settings.isEnabled else { return (try SwiftDataFridgeStore.makeContainer(), false, nil) }
+            let outcome = CloudSyncPreparation.prepareIfNeeded(storeURL: SwiftDataFridgeStore.defaultStoreURL, settings: settings,
+                                                                snapshots: snapshots, magnetImageDirectory: MagnetImageStore.defaultDirectory)
+            switch outcome {
+            case .ready:
+                return (try SwiftDataFridgeStore.makeContainer(cloudKit: true), true, nil)
+            case let .failed(message):
+                return (try SwiftDataFridgeStore.makeContainer(), false, message)
+            }
+        }, cloudAware: true)
     }
 
     static func inMemoryForTesting() -> AppPersistence {
@@ -46,6 +72,12 @@ final class AppPersistence {
     /// Attempts to open storage. Safe to call again for a retry.
     func open() -> PersistenceState {
         do {
+            if let cloudFactory {
+                let (container, cloud, problem) = try cloudFactory()
+                isCloudActive = cloud
+                cloudProblem = problem
+                return .available(container, mode)
+            }
             return .available(try factory(), mode)
         } catch {
             // Technical details are logged privately (not visible in shared logs), never shown in the UI.
@@ -99,14 +131,13 @@ enum AppBootstrap {
 
     /// Fresh stores (fresh contexts, nothing cached) over an already open container. Used at launch and after a restore.
     static func makeSession(container: ModelContainer, mode: PersistenceMode, selection: FridgeSelectionStore) -> Result<AppSession, Error> {
+        // Settle anything iCloud delivered since the last launch (never assigns or deletes user data on its own).
+        _ = try? SyncReconciler(container: container).run()
         let fridgeStore = SwiftDataFridgeStore(container: container)
         let foodStore = SwiftDataFoodStore(container: container)
         do {
             let directory = try FridgeDirectory(fridgeStore: fridgeStore, foodStore: foodStore, selection: selection)
-            // Test sessions keep magnet photos in a temporary folder, never in the user's data.
-            let imageDirectory = mode == .persistent
-                ? MagnetImageStore.defaultDirectory
-                : FileManager.default.temporaryDirectory.appendingPathComponent("TestMagnets", isDirectory: true)
+            let imageDirectory = MagnetImageStore.directory(for: container)
             let magnets = MagnetLibrary(store: SwiftDataMagnetStore(container: container), images: MagnetImageStore(directory: imageDirectory))
             directory.onFridgeDeleted = { magnets.removeUnreferencedImages() }
             return .success(AppSession(fridgeStore: fridgeStore, foodStore: foodStore, loadResult: directory.selected,

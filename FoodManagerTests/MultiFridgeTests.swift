@@ -20,6 +20,10 @@ final class FailingFridgeStore: FridgeStore {
         if failWrites { throw Failure() }
         try base.deleteFridge(fridgeID, moveHistoryTo: historyDestination)
     }
+    func mergeFridge(_ sourceID: UUID, into targetID: UUID, compartmentID: UUID) throws {
+        if failWrites { throw Failure() }
+        try base.mergeFridge(sourceID, into: targetID, compartmentID: compartmentID)
+    }
 }
 
 /// Phase 4.1: up to two free fridges, isolation, switching, deletion, notifications, widgets, migration.

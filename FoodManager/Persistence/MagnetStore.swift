@@ -7,21 +7,22 @@ import os
 
 /// SwiftData row for one fridge magnet. Image bytes are never stored here: photo magnets point at a file
 /// in `MagnetImageStore` by `localImageID`; built-in magnets point at a file in `BuiltInMagnets.bundle` by `builtInAssetID`.
+/// CloudKit-compatible: defaults everywhere, no unique constraint (see `FridgeRecord`).
 @Model
 final class MagnetRecord {
-    @Attribute(.unique) var id: UUID
-    var fridgeID: UUID
-    var sourceRaw: String
+    var id: UUID = UUID()
+    var fridgeID: UUID = UUID()
+    var sourceRaw: String = "builtIn"
     var builtInAssetID: String?
     var localImageID: UUID?
-    var centerX: Double
-    var centerY: Double
-    var width: Double
-    var height: Double
-    var rotation: Double
-    var zIndex: Int
-    var createdAt: Date
-    var updatedAt: Date
+    var centerX: Double = 0.5
+    var centerY: Double = 0.5
+    var width: Double = 0.3
+    var height: Double = 0.3
+    var rotation: Double = 0
+    var zIndex: Int = 0
+    var createdAt: Date = Date.now
+    var updatedAt: Date = Date.now
     /// Phase 4.3 addition (optional, so existing rows migrate untouched; nil = the source's default style).
     var styleRaw: String?
 
@@ -66,12 +67,36 @@ final class MagnetRecord {
     }
 }
 
+/// Photo bytes of a photo magnet, synced to iCloud. `externalStorage` keeps the bytes out of the SQLite row;
+/// CloudKit mirrors them as a CKAsset in the user's private database (never public). One record per image ID,
+/// shared by every magnet that shows the photo, so duplicating a magnet never uploads it again.
+@Model
+final class MagnetImageRecord {
+    var id: UUID = UUID()
+    /// The stored display-size image (≤ 1024 px, PNG or JPEG) — never the original photo.
+    @Attribute(.externalStorage) var data: Data?
+    var createdAt: Date = Date.now
+
+    init(id: UUID, data: Data) {
+        self.id = id
+        self.data = data
+        createdAt = .now
+    }
+}
+
 protocol MagnetStore: AnyObject {
     /// One fridge's magnets, bottom layer first.
     func magnets(fridgeID: UUID) throws -> [FridgeMagnet]
     func allMagnets() throws -> [FridgeMagnet]
-    /// Replaces one fridge's magnets in a single save (all or nothing).
-    func replaceMagnets(_ magnets: [FridgeMagnet], fridgeID: UUID) throws
+    /// Replaces one fridge's magnets in a single save (all or nothing). `newImages` are stored as synced image
+    /// records (if not stored yet). Image records the fridge's previous magnets used and nothing uses any more
+    /// are deleted in the same save.
+    func replaceMagnets(_ magnets: [FridgeMagnet], fridgeID: UUID, newImages: [UUID: Data]) throws
+    /// Synced bytes of a photo (nil until they arrive from iCloud).
+    func imageData(id: UUID) throws -> Data?
+    func storedImageIDs() throws -> Set<UUID>
+    /// Adds image records for photos that only exist as local files (one-time upgrade to synced photos).
+    func addImages(_ images: [UUID: Data]) throws
 }
 
 final class SwiftDataMagnetStore: MagnetStore {
@@ -79,26 +104,71 @@ final class SwiftDataMagnetStore: MagnetStore {
 
     init(container: ModelContainer) { self.container = container }
 
+    private func makeContext() -> ModelContext {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        return context
+    }
+
     func magnets(fridgeID: UUID) throws -> [FridgeMagnet] {
-        let descriptor = FetchDescriptor<MagnetRecord>(predicate: #Predicate { $0.fridgeID == fridgeID },
-                                                       sortBy: [SortDescriptor(\.zIndex), SortDescriptor(\.createdAt)])
-        return try ModelContext(container).fetch(descriptor).map(\.magnet)
+        let descriptor = FetchDescriptor<MagnetRecord>(predicate: #Predicate { $0.fridgeID == fridgeID })
+        return Self.ordered(SyncedRecords.unique(try makeContext().fetch(descriptor)).map(\.magnet))
     }
 
     func allMagnets() throws -> [FridgeMagnet] {
-        try ModelContext(container).fetch(FetchDescriptor<MagnetRecord>(sortBy: [SortDescriptor(\.zIndex)])).map(\.magnet)
+        Self.ordered(SyncedRecords.unique(try makeContext().fetch(FetchDescriptor<MagnetRecord>())).map(\.magnet))
     }
 
-    func replaceMagnets(_ magnets: [FridgeMagnet], fridgeID: UUID) throws {
-        let context = ModelContext(container)
-        context.autosaveEnabled = false
+    /// Bottom layer first; equal layers (two devices adding at once) keep a stable order.
+    private static func ordered(_ magnets: [FridgeMagnet]) -> [FridgeMagnet] {
+        magnets.sorted { ($0.zIndex, $0.createdAt, $0.id.uuidString) < ($1.zIndex, $1.createdAt, $1.id.uuidString) }
+    }
+
+    func replaceMagnets(_ magnets: [FridgeMagnet], fridgeID: UUID, newImages: [UUID: Data]) throws {
+        let context = makeContext()
         let existing = try context.fetch(FetchDescriptor<MagnetRecord>(predicate: #Predicate { $0.fridgeID == fridgeID }))
-        let byID = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let previousImages = Set(existing.compactMap(\.localImageID))
+        let byID = Dictionary(grouping: existing, by: \.id)
         let kept = Set(magnets.map(\.id))
         for record in existing where !kept.contains(record.id) { context.delete(record) }
         for magnet in magnets {
-            if let record = byID[magnet.id] { record.apply(magnet) } else { context.insert(MagnetRecord(magnet)) }
+            if let records = byID[magnet.id] {
+                for record in records { record.apply(magnet) }
+            } else {
+                context.insert(MagnetRecord(magnet))
+            }
         }
+        try insertMissingImages(newImages, in: context)
+        let otherFridges = try context.fetch(FetchDescriptor<MagnetRecord>(predicate: #Predicate { $0.fridgeID != fridgeID }))
+        let remainingHere = Set(magnets.compactMap(\.localImageID))
+        try MagnetRecordCleanup.deleteImages(previousImages.subtracting(remainingHere), stillUsedBy: otherFridges, in: context)
+        try save(context)
+    }
+
+    func imageData(id: UUID) throws -> Data? {
+        try makeContext().fetch(FetchDescriptor<MagnetImageRecord>(predicate: #Predicate { $0.id == id }))
+            .compactMap(\.data).first
+    }
+
+    func storedImageIDs() throws -> Set<UUID> {
+        Set(try makeContext().fetch(FetchDescriptor<MagnetImageRecord>()).filter { $0.data != nil }.map(\.id))
+    }
+
+    func addImages(_ images: [UUID: Data]) throws {
+        guard !images.isEmpty else { return }
+        let context = makeContext()
+        try insertMissingImages(images, in: context)
+        try save(context)
+    }
+
+    private func insertMissingImages(_ images: [UUID: Data], in context: ModelContext) throws {
+        for (id, data) in images {
+            let existing = try context.fetch(FetchDescriptor<MagnetImageRecord>(predicate: #Predicate { $0.id == id }))
+            if existing.isEmpty { context.insert(MagnetImageRecord(id: id, data: data)) }
+        }
+    }
+
+    private func save(_ context: ModelContext) throws {
         do {
             try context.save()
         } catch {
@@ -151,6 +221,21 @@ final class MagnetImageStore {
     init(directory: URL) {
         self.directory = directory
         cache.countLimit = 40
+    }
+
+    /// The photo cache that belongs to `container`: the real folder only for the real (default) store. Any other
+    /// store — in memory, or a file elsewhere (tests) — gets its own folder, so cleaning up after one database can
+    /// never delete another database's photos.
+    static func directory(for container: ModelContainer) -> URL {
+        guard let configuration = container.configurations.first else { return scratchDirectory(named: "Unknown") }
+        if configuration.isStoredInMemoryOnly { return scratchDirectory(named: "InMemory-\(ObjectIdentifier(container).hashValue)") }
+        if configuration.url.standardizedFileURL == SwiftDataFridgeStore.defaultStoreURL.standardizedFileURL { return defaultDirectory }
+        return configuration.url.deletingLastPathComponent()
+            .appendingPathComponent("Magnets-" + configuration.url.deletingPathExtension().lastPathComponent, isDirectory: true)
+    }
+
+    private static func scratchDirectory(named name: String) -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("MagnetCache/\(name)", isDirectory: true)
     }
 
     static var defaultDirectory: URL {
@@ -316,11 +401,31 @@ final class MagnetLibrary {
         try store.magnets(fridgeID: fridgeID).map(MagnetGeometry.sanitized)
     }
 
-    /// Saves the draft (one save). Image files that nothing references any more are removed afterwards;
-    /// if saving fails, nothing is removed and the draft stays valid for a retry.
+    /// Saves the draft (one save, including the bytes of newly added photos so they sync). Local image files that
+    /// nothing references any more are removed afterwards; if saving fails, nothing is removed and the draft stays
+    /// valid for a retry.
     func commit(_ draft: MagnetDraft) throws {
-        try store.replaceMagnets(draft.magnets, fridgeID: draft.fridgeID)
+        let stored = (try? store.storedImageIDs()) ?? []
+        var newImages: [UUID: Data] = [:]
+        for id in draft.referencedImageIDs where !stored.contains(id) {
+            // A photo whose bytes haven't arrived from iCloud yet has no file either: its record comes later.
+            if let data = images.data(id) { newImages[id] = data }
+        }
+        try store.replaceMagnets(draft.magnets, fridgeID: draft.fridgeID, newImages: newImages)
         removeUnreferencedImages()
+    }
+
+    /// One-time (and idempotent) upgrade: photos saved before iCloud sync only exist as local files. Gives each
+    /// referenced photo a synced image record. Returns how many were added.
+    @discardableResult
+    func backfillImageRecords() throws -> Int {
+        let stored = try store.storedImageIDs()
+        var missing: [UUID: Data] = [:]
+        for id in Set(try store.allMagnets().compactMap(\.localImageID)) where !stored.contains(id) {
+            if let data = images.data(id) { missing[id] = data }
+        }
+        try store.addImages(missing)
+        return missing.count
     }
 
     /// Cancel: drops images imported during the session that nothing saved refers to.
@@ -342,7 +447,26 @@ final class MagnetLibrary {
     func image(for magnet: FridgeMagnet) -> UIImage? {
         switch magnet.source {
         case .builtIn: return magnet.builtInAssetID.flatMap(catalog.image(id:))
-        case .photo: return magnet.localImageID.flatMap(images.image)
+        case .photo: return magnet.localImageID.flatMap(photo(id:))
         }
+    }
+
+    /// Local cache first; otherwise the synced bytes are written to the cache. nil while they haven't arrived
+    /// (the magnet then shows a neutral placeholder and keeps its place).
+    private func photo(id: UUID) -> UIImage? {
+        if let image = images.image(id) { return image }
+        guard let data = try? store.imageData(id: id) else { return nil }
+        do {
+            try images.storeImageData(data, id: id)
+        } catch {
+            logger.error("Caching a synced magnet photo failed: \(String(describing: error), privacy: .private)")
+            return nil
+        }
+        return images.image(id)
+    }
+
+    /// Bytes for a backup: the local cache, else the synced record.
+    func photoData(id: UUID) -> Data? {
+        images.data(id) ?? (try? store.imageData(id: id)) ?? nil
     }
 }

@@ -634,6 +634,6 @@ final class BackupTests: XCTestCase {
         let labels = (0..<settings.tableView(settings.tableView, numberOfRowsInSection: section)).compactMap {
             (settings.tableView(settings.tableView, cellForRowAt: IndexPath(row: $0, section: section)).contentConfiguration as? UIListContentConfiguration)?.text
         }
-        XCTAssertEqual(labels, ["匯出備份", "匯入備份"])
+        XCTAssertEqual(labels, ["iCloud 自動同步", "匯出備份", "匯入備份"], "manual backup stays next to iCloud sync")
     }
 }

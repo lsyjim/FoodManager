@@ -32,6 +32,11 @@ final class FlakyFoodStore: FoodStore {
         if failDeletes { throw Failure() }
         try base.delete(id: id)
     }
+
+    func unplacedActiveItems(knownFridgeIDs: Set<UUID>) throws -> [FoodItem] {
+        if failReads { throw Failure() }
+        return try base.unplacedActiveItems(knownFridgeIDs: knownFridgeIDs)
+    }
 }
 
 /// Phase 3 critical fixes: no silent in-memory fallback, no false success, explicit load states.

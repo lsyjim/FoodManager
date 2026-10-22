@@ -157,6 +157,41 @@ final class FridgeDirectory {
         post()
     }
 
+    /// Over the limit after two devices created fridges before syncing. Never resolved silently: the user merges.
+    var exceedsLimit: Bool { results.count > FridgePolicy.maxRefrigerators }
+
+    /// Merges `sourceID` into `targetID`: all its food (active food into `compartmentID`), history and magnets move,
+    /// then the source is deleted. Nothing is discarded.
+    func merge(_ sourceID: UUID, into targetID: UUID, compartmentID: UUID) throws {
+        guard contains(sourceID), contains(targetID), sourceID != targetID else { throw FridgeDirectoryError.notFound }
+        try fridgeStore.mergeFridge(sourceID, into: targetID, compartmentID: compartmentID)
+        if selection.selectedFridgeID == sourceID { selection.selectedFridgeID = targetID }
+        onFridgeDeleted?()
+        try reload()
+        post()
+    }
+
+    /// Active food that belongs to no fridge on this device (its fridge hasn't synced yet, or was deleted elsewhere).
+    func unplacedItems() throws -> [FoodItem] {
+        try foodStore.unplacedActiveItems(knownFridgeIDs: Set(fridges.map(\.id)))
+    }
+
+    /// Puts all unplaced food into a compartment the user chose.
+    func placeUnplacedItems(into fridgeID: UUID, compartmentID: UUID) throws {
+        guard let fridge = fridge(id: fridgeID), fridge.allCompartments.contains(where: { $0.id == compartmentID }) else {
+            throw FridgeDirectoryError.notFound
+        }
+        let now = Date()
+        for var item in try unplacedItems() {
+            item.fridgeID = fridgeID
+            item.compartmentID = compartmentID
+            item.updatedAt = now
+            try foodStore.upsert(item)
+        }
+        NotificationCenter.default.post(name: .foodInventoryDidChange, object: nil)
+        post()
+    }
+
     /// Active food of every fridge (notifications, widgets, "所有冰箱" reminders).
     func allActiveItems() throws -> [FoodItem] {
         try fridges.flatMap { try foodStore.activeItems(fridgeID: $0.id) }

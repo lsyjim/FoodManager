@@ -14,9 +14,15 @@ final class FailingMagnetStore: MagnetStore {
     init(base: MagnetStore) { self.base = base }
     func magnets(fridgeID: UUID) throws -> [FridgeMagnet] { try base.magnets(fridgeID: fridgeID) }
     func allMagnets() throws -> [FridgeMagnet] { try base.allMagnets() }
-    func replaceMagnets(_ magnets: [FridgeMagnet], fridgeID: UUID) throws {
+    func replaceMagnets(_ magnets: [FridgeMagnet], fridgeID: UUID, newImages: [UUID: Data]) throws {
         if failWrites { throw Failure() }
-        try base.replaceMagnets(magnets, fridgeID: fridgeID)
+        try base.replaceMagnets(magnets, fridgeID: fridgeID, newImages: newImages)
+    }
+    func imageData(id: UUID) throws -> Data? { try base.imageData(id: id) }
+    func storedImageIDs() throws -> Set<UUID> { try base.storedImageIDs() }
+    func addImages(_ images: [UUID: Data]) throws {
+        if failWrites { throw Failure() }
+        try base.addImages(images)
     }
 }
 
@@ -406,9 +412,18 @@ final class MagnetTests: XCTestCase {
         XCTAssertEqual(freshImages.data(imported.id), images.data(imported.id), "identical bytes after restore")
         XCTAssertNotNil(freshImages.thumbnail(imported.id))
 
-        // Export refuses to write a backup without a photo.
+        // Without the local file, the synced image record still provides the bytes.
+        let bytes = images.data(imported.id)
         images.remove(imported.id)
+        XCTAssertEqual(try service(container, images).makeBackup().allMagnetImages.first?.data, bytes)
+        // With neither, export never silently drops the photo: it asks first (allowMissingPhotos).
+        let context = ModelContext(container)
+        for record in try context.fetch(FetchDescriptor<MagnetImageRecord>()) { context.delete(record) }
+        try context.save()
         XCTAssertThrowsError(try service(container, images).makeBackup()) { XCTAssertEqual($0 as? BackupError, .magnetImageMissing) }
+        let partial = try service(container, images).makeBackup(allowMissingPhotos: true)
+        XCTAssertEqual(BackupValidator.summary(of: partial).missingPhotoCount, 2, "both magnets that show the photo")
+        XCTAssertNoThrow(try BackupValidator.decode(BackupCoding.encoder().encode(partial)))
     }
 
     func testVersionOneBackupWithoutMagnetsStillImports() throws {
@@ -438,7 +453,12 @@ final class MagnetTests: XCTestCase {
         bad.magnets![0].fridgeID = fridge.id
         bad.magnets![0].source = .photo
         bad.magnets![0].localImageID = UUID()
-        XCTAssertThrowsError(try BackupValidator.validate(bad), "a photo magnet needs its image in the file")
+        // A photo magnet without its bytes (exported while the photo was still downloading, with consent) is
+        // valid: it restores as a blank card in the same place, and the preview says so.
+        XCTAssertNoThrow(try BackupValidator.validate(bad))
+        XCTAssertEqual(BackupValidator.summary(of: bad).missingPhotoCount, 1)
+        bad.magnets![0].localImageID = nil
+        XCTAssertThrowsError(try BackupValidator.validate(bad), "a photo magnet needs an image ID")
     }
 
     // 23

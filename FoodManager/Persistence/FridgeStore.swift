@@ -25,6 +25,8 @@ protocol FridgeStore: AnyObject {
     /// Deletes an empty fridge and, in the same save, hands its consumed-food history to `historyDestination`.
     /// Throws `fridgeHasActiveFood` (and changes nothing) if active food still belongs to it.
     func deleteFridge(_ fridgeID: UUID, moveHistoryTo historyDestination: UUID) throws
+    /// Moves everything of `sourceID` (active food into `compartmentID` of the target) and deletes it. One save.
+    func mergeFridge(_ sourceID: UUID, into targetID: UUID, compartmentID: UUID) throws
 }
 
 extension FridgeStore {
@@ -32,109 +34,156 @@ extension FridgeStore {
 }
 
 final class SwiftDataFridgeStore: FridgeStore {
-    private let context: ModelContext
+    private let container: ModelContainer
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "FridgeStore")
 
     init(container: ModelContainer) {
-        context = ModelContext(container)
-        context.autosaveEnabled = false
+        self.container = container
     }
 
-    /// `url == nil && inMemory == false` uses the default app-support store.
-    static func makeContainer(inMemory: Bool = false, url: URL? = nil) throws -> ModelContainer {
-        // Phase 2 adds FoodItemRecord as a new, independent entity. Adding an entity is a lightweight,
-        // non-destructive migration: existing FridgeRecord rows are kept as-is.
-        // Phase 4.3 adds MagnetRecord the same way (new entity, existing rows untouched).
-        let schema = Schema([FridgeRecord.self, FoodItemRecord.self, MagnetRecord.self])
+    static let schema = Schema([FridgeRecord.self, FoodItemRecord.self, MagnetRecord.self, MagnetImageRecord.self])
+
+    /// `url == nil && inMemory == false` uses the default app-support store (in the App Group container).
+    /// `cloudKit` mirrors the store to the user's private CloudKit database. It is never on implicitly: with the
+    /// iCloud entitlement present SwiftData would otherwise sync any store automatically (tests included).
+    static func makeContainer(inMemory: Bool = false, url: URL? = nil, cloudKit: Bool = false) throws -> ModelContainer {
+        // Schema history (all migrations are lightweight and keep every row):
+        // - Phase 2 adds FoodItemRecord, Phase 4.3 adds MagnetRecord (new entities).
+        // - Phase 4.4 removes the unique constraints (CloudKit can't enforce them), adds attribute defaults and
+        //   adds MagnetImageRecord (photo bytes, synced as CKAssets).
+        let database: ModelConfiguration.CloudKitDatabase = cloudKit ? .private(CloudSyncConstants.containerIdentifier) : .none
         let configuration: ModelConfiguration
         if let url {
-            configuration = ModelConfiguration(schema: schema, url: url)
+            configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: database)
         } else {
-            configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: inMemory)
+            configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: inMemory, cloudKitDatabase: database)
         }
         return try ModelContainer(for: schema, configurations: [configuration])
     }
 
+    /// Where the default store lives, without opening it (used for the pre-sync file copy).
+    static var defaultStoreURL: URL {
+        ModelConfiguration(schema: schema, cloudKitDatabase: .none).url
+    }
+
+    /// A fresh context per operation: nothing cached can hide changes that arrived from iCloud in the meantime.
+    private func makeContext() -> ModelContext {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        return context
+    }
+
     func load() throws -> FridgeLoadResult {
-        var descriptor = FetchDescriptor<FridgeRecord>(sortBy: [SortDescriptor(\.createdAt)])
-        descriptor.fetchLimit = 1
-        if let record = try context.fetch(descriptor).first {
-            return fridge(from: record)
-        }
-        let fridge = FridgeFactory.makeDefault()
-        let record = FridgeRecord(id: fridge.id, name: fridge.name, templateID: fridge.templateID,
-                                  lastDoorStateRaw: fridge.lastDoorState.rawValue,
-                                  layoutData: try StoredLayout.encode(fridge))
-        context.insert(record)
-        try saveOrRollback()
-        return FridgeLoadResult(fridge: fridge, recovery: .none)
+        try loadAll()[0]
     }
 
     func saveLayout(_ fridge: Fridge) throws {
         let errors = FridgeLayoutEngine.validate(fridge)
         guard errors.isEmpty else { throw FridgeStoreError.invalidLayout(errors) }
         let data = try StoredLayout.encode(fridge)
-        let record = try fetchRecord(id: fridge.id)
-        record.name = fridge.name
-        record.templateID = fridge.templateID
-        record.layoutData = data
-        record.updatedAt = .now
-        try saveOrRollback()
+        let context = makeContext()
+        for record in try fetchRecords(id: fridge.id, in: context) {
+            record.name = fridge.name
+            record.templateID = fridge.templateID
+            record.layoutData = data
+            record.updatedAt = .now
+        }
+        try save(context)
     }
 
     func saveDoorState(_ state: DoorState, fridgeID: UUID) throws {
-        let record = try fetchRecord(id: fridgeID)
-        record.lastDoorStateRaw = state.rawValue
-        try saveOrRollback()
+        let context = makeContext()
+        for record in try fetchRecords(id: fridgeID, in: context) { record.lastDoorStateRaw = state.rawValue }
+        try save(context)
     }
 
     func loadAll() throws -> [FridgeLoadResult] {
-        let records = try context.fetch(FetchDescriptor<FridgeRecord>(sortBy: [SortDescriptor(\.createdAt)]))
-        guard !records.isEmpty else { return [try load()] } // first launch: default fridge
-        return records.map(fridge(from:))
+        let context = makeContext()
+        let records = SyncedRecords.unique(try context.fetch(FetchDescriptor<FridgeRecord>(sortBy: [SortDescriptor(\.createdAt)])))
+        guard records.isEmpty else { return records.map(fridge(from:)) }
+        // First launch: one default fridge. Its IDs are fixed, so two new devices that both create it end up with
+        // the same logical fridge after syncing instead of two "我的冰箱" (see `SyncReconciler`).
+        let fridge = FridgeFactory.makeFirstLaunchDefault()
+        context.insert(FridgeRecord(id: fridge.id, name: fridge.name, templateID: fridge.templateID,
+                                    lastDoorStateRaw: fridge.lastDoorState.rawValue,
+                                    layoutData: try StoredLayout.encode(fridge)))
+        try save(context)
+        return [FridgeLoadResult(fridge: fridge, recovery: .none)]
     }
 
     func create(_ fridge: Fridge) throws {
         let errors = FridgeLayoutEngine.validate(fridge)
         guard errors.isEmpty else { throw FridgeStoreError.invalidLayout(errors) }
+        let context = makeContext()
         context.insert(FridgeRecord(id: fridge.id, name: fridge.name, templateID: fridge.templateID,
                                     lastDoorStateRaw: fridge.lastDoorState.rawValue, layoutData: try StoredLayout.encode(fridge)))
-        try saveOrRollback()
+        try save(context)
     }
 
     func rename(fridgeID: UUID, to name: String) throws {
-        let record = try fetchRecord(id: fridgeID)
-        record.name = name
-        record.updatedAt = .now
-        try saveOrRollback()
+        let context = makeContext()
+        for record in try fetchRecords(id: fridgeID, in: context) {
+            record.name = name
+            record.updatedAt = .now
+        }
+        try save(context)
     }
 
     func deleteFridge(_ fridgeID: UUID, moveHistoryTo historyDestination: UUID) throws {
-        let record = try fetchRecord(id: fridgeID)
-        _ = try fetchRecord(id: historyDestination)
+        let context = makeContext()
+        let records = try fetchRecords(id: fridgeID, in: context)
+        _ = try fetchRecords(id: historyDestination, in: context)
         let food = try context.fetch(FetchDescriptor<FoodItemRecord>(predicate: #Predicate { $0.fridgeID == fridgeID }))
-        let active = food.filter { $0.consumedAt == nil }.count
+        let active = Set(food.filter { $0.consumedAt == nil }.map(\.id)).count
         guard active == 0 else { throw FridgeStoreError.fridgeHasActiveFood(active) }
         // History is kept: it moves to the remaining fridge (its old compartment IDs no longer exist there,
         // so restoring asks the user where to put it — nothing is placed silently).
         for item in food { item.fridgeID = historyDestination }
-        // Its magnets go in the same save; their image files are cleaned up only after it succeeded.
-        for magnet in try context.fetch(FetchDescriptor<MagnetRecord>(predicate: #Predicate { $0.fridgeID == fridgeID })) {
-            context.delete(magnet)
+        // Its magnets go in the same save, with photos only they used.
+        try MagnetRecordCleanup.deleteMagnets(ofFridge: fridgeID, in: context)
+        for record in records { context.delete(record) }
+        try save(context)
+    }
+
+    /// Resolves a fridge-count conflict without losing anything: every food record and magnet of `sourceID`
+    /// moves to `targetID` (active food into `compartmentID`, which must belong to the target), then the source
+    /// fridge is deleted. One save.
+    func mergeFridge(_ sourceID: UUID, into targetID: UUID, compartmentID: UUID) throws {
+        let context = makeContext()
+        let sources = try fetchRecords(id: sourceID, in: context)
+        guard let target = SyncedRecords.unique(try fetchRecords(id: targetID, in: context)).first, sourceID != targetID else {
+            throw FridgeStoreError.fridgeNotFound
         }
-        context.delete(record)
-        try saveOrRollback()
+        guard fridge(from: target).fridge.allCompartments.contains(where: { $0.id == compartmentID }) else {
+            throw FridgeStoreError.fridgeNotFound
+        }
+        let now = Date()
+        for item in try context.fetch(FetchDescriptor<FoodItemRecord>(predicate: #Predicate { $0.fridgeID == sourceID })) {
+            item.fridgeID = targetID
+            if item.consumedAt == nil { item.compartmentID = compartmentID }
+            item.updatedAt = now
+        }
+        let targetTop = (try context.fetch(FetchDescriptor<MagnetRecord>(predicate: #Predicate { $0.fridgeID == targetID }))
+            .map(\.zIndex).max() ?? -1) + 1
+        for magnet in try context.fetch(FetchDescriptor<MagnetRecord>(predicate: #Predicate { $0.fridgeID == sourceID })) {
+            magnet.fridgeID = targetID
+            magnet.zIndex += targetTop
+            magnet.updatedAt = now
+        }
+        for record in sources { context.delete(record) }
+        try save(context)
     }
 
     // MARK: - Private
 
-    private func fetchRecord(id: UUID) throws -> FridgeRecord {
-        let descriptor = FetchDescriptor<FridgeRecord>(predicate: #Predicate { $0.id == id })
-        guard let record = try context.fetch(descriptor).first else { throw FridgeStoreError.fridgeNotFound }
-        return record
+    /// Every row carrying this app ID (normally one; more if two devices stored the same record before syncing).
+    private func fetchRecords(id: UUID, in context: ModelContext) throws -> [FridgeRecord] {
+        let records = try context.fetch(FetchDescriptor<FridgeRecord>(predicate: #Predicate { $0.id == id }))
+        guard !records.isEmpty else { throw FridgeStoreError.fridgeNotFound }
+        return records
     }
 
-    private func saveOrRollback() throws {
+    private func save(_ context: ModelContext) throws {
         do {
             try context.save()
         } catch {

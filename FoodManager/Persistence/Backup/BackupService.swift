@@ -54,16 +54,18 @@ final class BackupService {
     // MARK: - Export
 
     /// Everything currently stored, validated with the same rules as an import.
-    /// Throws `magnetImageMissing` rather than exporting a backup without a photo.
-    func makeBackup() throws -> FoodManagerBackup {
-        let backup = try currentBackup(requireImages: true)
+    /// Throws `magnetImageMissing` rather than silently exporting a backup without a photo. With
+    /// `allowMissingPhotos` (the user agreed), such magnets are exported without their photo and restore as a
+    /// blank card in the same place — e.g. while a photo is still downloading from iCloud.
+    func makeBackup(allowMissingPhotos: Bool = false) throws -> FoodManagerBackup {
+        let backup = try currentBackup(requireImages: !allowMissingPhotos)
         try BackupValidator.validate(backup)
         return backup
     }
 
     /// Writes the backup to a fresh temporary file and returns its URL only once the file exists and decodes.
-    func exportFile() throws -> URL {
-        let backup = try makeBackup()
+    func exportFile(allowMissingPhotos: Bool = false) throws -> URL {
+        let backup = try makeBackup(allowMissingPhotos: allowMissingPhotos)
         let data: Data
         do {
             data = try BackupCoding.encoder().encode(backup)
@@ -185,7 +187,7 @@ final class BackupService {
         let stored = try inventory.readInventory()
         var images: [BackupMagnetImage] = []
         for id in Set(stored.magnets.compactMap(\.localImageID)).sorted(by: { $0.uuidString < $1.uuidString }) {
-            if let data = magnetImages?.data(id) {
+            if let data = magnetImages?.data(id) ?? stored.images[id] {
                 images.append(BackupMagnetImage(id: id, data: data))
             } else if requireImages {
                 throw BackupError.magnetImageMissing
@@ -198,7 +200,8 @@ final class BackupService {
     }
 
     private static func inventory(of backup: FoodManagerBackup) -> StoredInventory {
-        StoredInventory(fridges: backup.fridges, foods: backup.foods, magnets: backup.allMagnets)
+        StoredInventory(fridges: backup.fridges, foods: backup.foods, magnets: backup.allMagnets,
+                        images: Dictionary(backup.allMagnetImages.map { ($0.id, $0.data) }, uniquingKeysWith: { first, _ in first }))
     }
 
     private func writeImages(_ images: [BackupMagnetImage]) throws {

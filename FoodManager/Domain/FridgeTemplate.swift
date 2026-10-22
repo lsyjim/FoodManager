@@ -77,6 +77,16 @@ enum FridgeTemplateCatalog {
 }
 
 enum FridgeFactory {
+    /// The fridge created on a brand-new install. Fixed IDs (fridge and compartments) make the default fridge of
+    /// two new devices the same logical record once they sync, instead of a duplicate.
+    static let firstLaunchFridgeID = UUID(uuidString: "F00D0000-0000-4000-8000-00000000F001")!
+
+    static func makeFirstLaunchDefault() -> Fridge {
+        let fridge = makeDefault(idSeed: firstLaunchFridgeID)
+        return Fridge(id: firstLaunchFridgeID, name: fridge.name, templateID: fridge.templateID, lastDoorState: fridge.lastDoorState,
+                      cabinetCompartments: fridge.cabinetCompartments, doorCompartments: fridge.doorCompartments)
+    }
+
     /// Builds a fresh fridge from a template's default layout, with packed, validated frames.
     /// With `idSeed`, compartment IDs are derived deterministically (used for damaged-layout fallback,
     /// so every launch produces the same IDs instead of a new series).

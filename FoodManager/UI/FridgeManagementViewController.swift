@@ -127,16 +127,100 @@ final class FridgeManagementViewController: UITableViewController {
         reload()
     }
 
-    @objc private func reload() { tableView.reloadData() }
+    @objc private func reload() {
+        unplacedCount = (try? directory.unplacedItems().count) ?? 0
+        tableView.reloadData()
+    }
 
-    override func numberOfSections(in tableView: UITableView) -> Int { 2 }
+    // MARK: - Sync conflicts (section 2, only when needed)
+
+    private enum Attention { case merge, unplaced }
+    private var unplacedCount = 0
+    private var attention: [Attention] {
+        (directory.exceedsLimit ? [.merge] : []) + (unplacedCount > 0 ? [.unplaced] : [])
+    }
+
+    override func numberOfSections(in tableView: UITableView) -> Int { attention.isEmpty ? 2 : 3 }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        section == 0 ? directory.fridges.count : 1
+        switch section {
+        case 0: return directory.fridges.count
+        case 1: return 1
+        default: return attention.count
+        }
+    }
+
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        section == 2 ? "需要處理" : nil
     }
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        section == 1 ? FridgePolicy.limitMessage : nil
+        switch section {
+        case 1: return FridgePolicy.limitMessage
+        case 2: return "這通常發生在兩台裝置同步前各自建立了冰箱，或資料還在從 iCloud 下載。App 不會自動刪除或搬移任何東西，請選擇要怎麼處理。"
+        default: return nil
+        }
+    }
+
+    private func configureAttention(_ item: Attention, _ content: inout UIListContentConfiguration) {
+        switch item {
+        case .merge:
+            content.text = "冰箱超過 \(FridgePolicy.maxRefrigerators) 台：合併冰箱"
+            content.secondaryText = "把一台冰箱的食材、紀錄與磁鐵移到另一台，然後移除它。"
+            content.image = UIImage(systemName: "arrow.triangle.merge")
+        case .unplaced:
+            content.text = "\(unplacedCount) 筆食材找不到所屬冰箱"
+            content.secondaryText = "可能還在同步中，或那台冰箱已在其他裝置刪除。可以放到你選擇的隔層。"
+            content.image = UIImage(systemName: "questionmark.folder")
+        }
+        content.imageProperties.tintColor = Theme.Color.destructive
+    }
+
+    private func handleAttention(_ item: Attention, at indexPath: IndexPath) {
+        let source = tableView.cellForRow(at: indexPath)
+        switch item {
+        case .merge:
+            choose(title: "要移除哪一台冰箱？", subtitle: "它的所有內容會移到另一台", options: directory.fridges, label: \.name, from: source) { [weak self] removed in
+                guard let self else { return }
+                let targets = self.directory.fridges.filter { $0.id != removed.id }
+                self.choose(title: "移到哪一台冰箱？", subtitle: nil, options: targets, label: \.name, from: source) { target in
+                    self.choose(title: "「\(removed.name)」的食材放到哪個隔層？", subtitle: nil, options: target.allCompartments,
+                                label: { "\($0.parentZoneID.displayName) · \($0.name)" }, from: source) { compartment in
+                        do {
+                            try self.directory.merge(removed.id, into: target.id, compartmentID: compartment.id)
+                            NotificationCenter.default.post(name: .foodInventoryDidChange, object: nil)
+                            if removed.id == self.currentFridgeID() { self.onSelect(target.id) } else { self.reload() }
+                        } catch {
+                            FoodActions.showError("合併沒有完成，資料沒有變更。", on: self)
+                        }
+                    }
+                }
+            }
+        case .unplaced:
+            choose(title: "放到哪一台冰箱？", subtitle: nil, options: directory.fridges, label: \.name, from: source) { [weak self] target in
+                guard let self else { return }
+                self.choose(title: "放到哪個隔層？", subtitle: nil, options: target.allCompartments,
+                            label: { "\($0.parentZoneID.displayName) · \($0.name)" }, from: source) { compartment in
+                    do {
+                        try self.directory.placeUnplacedItems(into: target.id, compartmentID: compartment.id)
+                        self.reload()
+                    } catch {
+                        FoodActions.showError("沒有移動，資料沒有變更。", on: self)
+                    }
+                }
+            }
+        }
+    }
+
+    private func choose<T>(title: String, subtitle: String?, options: [T], label: @escaping (T) -> String, from source: UIView?,
+                           then: @escaping (T) -> Void) {
+        let sheet = UIAlertController(title: title, message: subtitle, preferredStyle: .actionSheet)
+        for option in options {
+            sheet.addAction(UIAlertAction(title: label(option), style: .default) { _ in then(option) })
+        }
+        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = source ?? view
+        present(sheet, animated: true)
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -146,7 +230,9 @@ final class FridgeManagementViewController: UITableViewController {
         content.textProperties.font = UIFont.preferredFont(forTextStyle: .body)
         content.secondaryTextProperties.font = UIFont.preferredFont(forTextStyle: .footnote)
         content.secondaryTextProperties.color = Theme.Color.textSecondary
-        if indexPath.section == 0 {
+        if indexPath.section == 2 {
+            configureAttention(attention[indexPath.row], &content)
+        } else if indexPath.section == 0 {
             let fridge = directory.fridges[indexPath.row]
             let foodCount = (try? directory.foodStore.activeItems(fridgeID: fridge.id).count).map { "\($0) 項食材" } ?? "—"
             content.text = fridge.name
@@ -169,6 +255,7 @@ final class FridgeManagementViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        if indexPath.section == 2 { return handleAttention(attention[indexPath.row], at: indexPath) }
         guard indexPath.section == 0 else {
             let current = directory.fridge(id: currentFridgeID())
             return FridgeActions.presentAdd(directory: directory, copyFrom: current, from: self) { [weak self] fridge in

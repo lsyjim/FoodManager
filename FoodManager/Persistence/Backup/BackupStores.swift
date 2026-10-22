@@ -7,6 +7,8 @@ struct StoredInventory: Equatable {
     var fridges: [BackupFridge]
     var foods: [BackupFood]
     var magnets: [FridgeMagnet] = []
+    /// Synced magnet photo bytes by image ID (a restore stores them so they sync too).
+    var images: [UUID: Data] = [:]
 }
 
 protocol InventoryBackupStore: AnyObject {
@@ -35,14 +37,18 @@ final class SwiftDataInventoryBackupStore: InventoryBackupStore {
         // A fresh context every time, so nothing cached from an earlier read or a failed save leaks in.
         let context = ModelContext(container)
         let records = try context.fetch(FetchDescriptor<FridgeRecord>(sortBy: [SortDescriptor(\.createdAt)]))
-        let createdAt = Dictionary(records.map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
+        let createdAt = Dictionary(SyncedRecords.unique(records).map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
         // Same mapping (and in-memory layout recovery) the app itself uses; never writes.
         let fridges = try SwiftDataFridgeStore(container: container).loadAll().map {
             BackupFridge($0.fridge, createdAt: createdAt[$0.fridge.id] ?? .now)
         }
-        let foods = try context.fetch(FetchDescriptor<FoodItemRecord>()).map { BackupFood($0.item) }
-        let magnets = try context.fetch(FetchDescriptor<MagnetRecord>()).map(\.magnet)
-        return StoredInventory(fridges: fridges, foods: foods, magnets: magnets)
+        let foods = SyncedRecords.unique(try context.fetch(FetchDescriptor<FoodItemRecord>())).map { BackupFood($0.item) }
+        let magnets = SyncedRecords.unique(try context.fetch(FetchDescriptor<MagnetRecord>())).map(\.magnet)
+        var images: [UUID: Data] = [:]
+        for record in try context.fetch(FetchDescriptor<MagnetImageRecord>()) where images[record.id] == nil {
+            if let data = record.data { images[record.id] = data }
+        }
+        return StoredInventory(fridges: fridges, foods: foods, magnets: magnets, images: images)
     }
 
     func replaceInventory(_ inventory: StoredInventory) throws {
@@ -54,20 +60,22 @@ final class SwiftDataInventoryBackupStore: InventoryBackupStore {
 
         // Rows are updated in place when their ID is kept (IDs are unique, so delete + insert of the same ID
         // in one save is avoided), deleted when absent from the backup and inserted when new.
-        let existingFridges = Dictionary(try context.fetch(FetchDescriptor<FridgeRecord>()).map { ($0.id, $0) },
-                                         uniquingKeysWith: { first, _ in first })
+        // Every row of an ID is updated (or deleted): CloudKit can leave more than one row per app ID.
+        let existingFridges = Dictionary(grouping: try context.fetch(FetchDescriptor<FridgeRecord>()), by: \.id)
         let keptFridges = Set(fridges.map(\.id))
-        for (id, record) in existingFridges where !keptFridges.contains(id) { context.delete(record) }
+        for (id, records) in existingFridges where !keptFridges.contains(id) { records.forEach(context.delete) }
         for backup in fridges {
             let domain = backup.fridge
             let layout = try StoredLayout.encode(domain)
-            if let record = existingFridges[backup.id] {
-                record.name = domain.name
-                record.templateID = domain.templateID
-                record.lastDoorStateRaw = domain.lastDoorState.rawValue
-                record.layoutData = layout
-                record.createdAt = backup.createdAt
-                record.updatedAt = now
+            if let records = existingFridges[backup.id] {
+                for record in records {
+                    record.name = domain.name
+                    record.templateID = domain.templateID
+                    record.lastDoorStateRaw = domain.lastDoorState.rawValue
+                    record.layoutData = layout
+                    record.createdAt = backup.createdAt
+                    record.updatedAt = now
+                }
             } else {
                 context.insert(FridgeRecord(id: domain.id, name: domain.name, templateID: domain.templateID,
                                             lastDoorStateRaw: domain.lastDoorState.rawValue, layoutData: layout,
@@ -75,27 +83,42 @@ final class SwiftDataInventoryBackupStore: InventoryBackupStore {
             }
         }
 
-        let existingFoods = Dictionary(try context.fetch(FetchDescriptor<FoodItemRecord>()).map { ($0.id, $0) },
-                                       uniquingKeysWith: { first, _ in first })
+        let existingFoods = Dictionary(grouping: try context.fetch(FetchDescriptor<FoodItemRecord>()), by: \.id)
         let keptFoods = Set(foods.map(\.id))
-        for (id, record) in existingFoods where !keptFoods.contains(id) { context.delete(record) }
+        for (id, records) in existingFoods where !keptFoods.contains(id) { records.forEach(context.delete) }
         for backup in foods {
             let item = backup.item
-            if let record = existingFoods[backup.id] {
-                record.apply(item)
-                record.createdAt = item.createdAt
-                record.updatedAt = item.updatedAt
+            if let records = existingFoods[backup.id] {
+                for record in records {
+                    record.apply(item)
+                    record.createdAt = item.createdAt
+                    record.updatedAt = item.updatedAt
+                }
             } else {
                 context.insert(FoodItemRecord(item))
             }
         }
 
-        let existingMagnets = Dictionary(try context.fetch(FetchDescriptor<MagnetRecord>()).map { ($0.id, $0) },
-                                         uniquingKeysWith: { first, _ in first })
+        let existingMagnets = Dictionary(grouping: try context.fetch(FetchDescriptor<MagnetRecord>()), by: \.id)
         let keptMagnets = Set(inventory.magnets.map(\.id))
-        for (id, record) in existingMagnets where !keptMagnets.contains(id) { context.delete(record) }
+        for (id, records) in existingMagnets where !keptMagnets.contains(id) { records.forEach(context.delete) }
         for magnet in inventory.magnets {
-            if let record = existingMagnets[magnet.id] { record.apply(magnet) } else { context.insert(MagnetRecord(magnet)) }
+            if let records = existingMagnets[magnet.id] {
+                for record in records { record.apply(magnet) }
+            } else {
+                context.insert(MagnetRecord(magnet))
+            }
+        }
+
+        // Photos: exactly the restored set (a full replacement also replaces the synced photos).
+        let existingImages = Dictionary(grouping: try context.fetch(FetchDescriptor<MagnetImageRecord>()), by: \.id)
+        for (id, records) in existingImages where inventory.images[id] == nil { records.forEach(context.delete) }
+        for (id, data) in inventory.images {
+            if let records = existingImages[id] {
+                for record in records where record.data != data { record.data = data }
+            } else {
+                context.insert(MagnetImageRecord(id: id, data: data))
+            }
         }
 
         do {
@@ -135,6 +158,7 @@ final class UserDefaultsPreferencesBackupStore: PreferencesBackupStore {
         defaults.set(favoriteFoods, forKey: UserDefaultsFavoriteFoodStore.key)
         defaults.set(notifications, forKey: UserDefaultsNotificationPreferencesStore.key)
         selection.selectedFridgeID = preferences.selectedFridgeID
+        for key in PreferenceCloudSync.syncedKeys { PreferenceCloudSync.noteLocalChange(key: key, defaults: defaults) }
         // UserDefaults never reports write errors, so read everything back.
         guard readPreferences() == preferences else { throw PreferencesBackupError.notPersisted }
     }

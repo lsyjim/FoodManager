@@ -162,6 +162,11 @@ final class FridgeHomeViewController: UIViewController {
         magnetBoard.render((try? magnetLibrary.magnets(fridgeID: fridge.id)) ?? [])
     }
 
+    /// Nothing is being edited or shown on top: safe to rebuild the screen with data that arrived from iCloud.
+    var canBeRebuilt: Bool {
+        isViewLoaded && !isEditingLayout && presentedViewController == nil && navigationController?.topViewController === self
+    }
+
     func openMagnetEditor() {
         guard !isEditingLayout, presentedViewController == nil else { return }
         let magnets: [FridgeMagnet]
@@ -865,7 +870,10 @@ final class FridgeHomeViewController: UIViewController {
 
     func openSettings() {
         guard !isEditingLayout else { return }
-        let backup = BackupFlow(service: makeBackupService()) { [weak self] failure in self?.onDataRestored?(failure) }
+        let backup = BackupFlow(service: makeBackupService(),
+                                syncsToCloud: { CloudSyncSettings.shared.isEnabled && CloudSyncMonitor.shared.isCloudActive }) { [weak self] failure in
+            self?.onDataRestored?(failure)
+        }
         let settings = SettingsViewController(entitlements: entitlements, ads: ads, notifications: notifications,
                                               makeFridgeManagement: { [weak self] in self?.makeFridgeManagement() },
                                               backup: backup)

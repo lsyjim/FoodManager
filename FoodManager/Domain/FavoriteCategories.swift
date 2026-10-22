@@ -75,5 +75,6 @@ final class UserDefaultsFavoriteCategoryStore: FavoriteCategoryStore {
 
     func save(_ favorites: FavoriteCategories) {
         defaults.set(favorites.ids, forKey: Self.key)
+        PreferenceCloudSync.noteLocalChange(key: Self.key, defaults: defaults)
     }
 }

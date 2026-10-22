@@ -3,15 +3,18 @@ import SwiftData
 
 /// SwiftData row for one fridge. The compartment layout is stored as one versioned JSON blob so that
 /// saving a layout is a single-row, atomic write and new templates never require a schema migration.
+///
+/// CloudKit-compatible (Phase 4.4): no unique constraint (CloudKit can't enforce one — `id` stays the stable
+/// app identifier and `SyncReconciler` merges rows that share it) and every attribute has a default value.
 @Model
 final class FridgeRecord {
-    @Attribute(.unique) var id: UUID
-    var name: String
-    var templateID: String
-    var lastDoorStateRaw: String
-    var layoutData: Data
-    var createdAt: Date
-    var updatedAt: Date
+    var id: UUID = UUID()
+    var name: String = ""
+    var templateID: String = ""
+    var lastDoorStateRaw: String = "closed"
+    var layoutData: Data = Data()
+    var createdAt: Date = Date.now
+    var updatedAt: Date = Date.now
 
     init(id: UUID, name: String, templateID: String, lastDoorStateRaw: String, layoutData: Data, createdAt: Date = .now) {
         self.id = id

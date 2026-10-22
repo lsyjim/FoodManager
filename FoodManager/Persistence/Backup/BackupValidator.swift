@@ -46,7 +46,7 @@ enum BackupError: Error, Equatable {
         case let .invalidCompartmentReference(name): return "食材「\(name)」所在的冰箱或隔層不存在，檔案可能已損壞。"
         case .invalidPreferences: return "備份內的偏好設定無效，檔案可能已損壞。"
         case .invalidMagnets: return "備份內的冰箱磁鐵資料無效，檔案可能已損壞。"
-        case .magnetImageMissing: return "有磁鐵照片遺失，無法建立完整備份。請在「裝飾冰箱」刪除或重新加入該磁鐵後再匯出。"
+        case .magnetImageMissing: return "有磁鐵照片還沒從 iCloud 下載完成（或已遺失），這份備份不會包含那些照片。"
         case .currentDataUnreadable: return "無法讀取目前的資料，為了安全沒有進行還原。"
         case .recoverySnapshotFailed: return "無法建立還原前的保護副本（可能是儲存空間不足），沒有進行還原。"
         case .saveFailed: return "還原時儲存失敗，目前的資料沒有變更。"
@@ -67,6 +67,8 @@ struct BackupSummary: Equatable {
     let historyCount: Int
     let favoriteFoodCount: Int
     let magnetCount: Int
+    /// Photo magnets whose photo isn't in the file (they restore as blank cards).
+    let missingPhotoCount: Int
     /// Category IDs this build doesn't know (kept as-is; shown as 其他).
     let unknownCategoryCount: Int
 }
@@ -169,6 +171,9 @@ enum BackupValidator {
                       historyCount: backup.foods.filter { $0.consumedAt != nil }.count,
                       favoriteFoodCount: backup.preferences.favoriteFoods.count,
                       magnetCount: backup.allMagnets.count,
+                      missingPhotoCount: backup.allMagnets.filter { magnet in
+                          magnet.source == .photo && !backup.allMagnetImages.contains { $0.id == magnet.localImageID }
+                      }.count,
                       unknownCategoryCount: backup.foods.filter { !FoodCategoryCatalog.contains($0.categoryID) }.count)
     }
 
@@ -182,7 +187,7 @@ enum BackupValidator {
             guard fridgeIDs.contains(magnet.fridgeID), MagnetGeometry.isValid(magnet),
                   validDate(magnet.createdAt), validDate(magnet.updatedAt),
                   magnet.builtInAssetID.map({ $0.count <= 64 }) ?? true,
-                  magnet.source == .builtIn || magnet.localImageID.map(imageIDs.contains) == true else {
+                  magnet.source == .builtIn || magnet.localImageID != nil else {
                 throw BackupError.invalidMagnets
             }
         }

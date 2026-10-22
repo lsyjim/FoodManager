@@ -5,6 +5,15 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     private(set) var home: FridgeHomeViewController?
     private lazy var persistence = Self.makePersistence()
+    private var currentSession: AppSession?
+    private lazy var cloudSync: CloudSyncCoordinator = {
+        let coordinator = CloudSyncCoordinator()
+        coordinator.currentSession = { [weak self] in self?.currentSession }
+        coordinator.canRefresh = { [weak self] in self?.home?.canBeRebuilt ?? false }
+        coordinator.refresh = { [weak self] session in self?.reloadAfterCloudImport(from: session) }
+        coordinator.presentAccountNotice = { [weak self] in self?.presentAccountNoticeIfNeeded() }
+        return coordinator
+    }()
     /// Built once from `MonetizationPolicy` (survives storage retries and fridge switches).
     private lazy var monetization = MonetizationServices.make(policy: .current, mode: persistence.mode)
 
@@ -14,6 +23,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.overrideUserInterfaceStyle = .light // fixed warm palette
         window.tintColor = Theme.Color.stroke
         self.window = window
+        NotificationCenter.default.addObserver(forName: .cloudSyncSettingDidChange, object: nil, queue: .main) { [weak self] _ in
+            self?.reopenStorage()
+        }
         start()
         window.makeKeyAndVisible()
         // Cold launch from a widget: delivered once the fridge screen is ready.
@@ -22,8 +34,14 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// Refunds, purchases on other devices or Ask-to-Buy approvals may have happened while in the background.
     func sceneWillEnterForeground(_ scene: UIScene) {
+        if persistence.mode == .persistent { cloudSync.checkAccount() }
         guard let entitlements = monetization.entitlementObserver else { return }
         Task { await entitlements.refresh() }
+    }
+
+    /// Keeps the local protection copy current (policy A: recoverable after an iCloud sign-out or account change).
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        if persistence.mode == .persistent { cloudSync.refreshProtectionSnapshot() }
     }
 
     /// Widget tap while running or restored from the background.
@@ -37,6 +55,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         switch AppBootstrap.start(persistence) {
         case let .success(session):
             show(session)
+            if persistence.mode == .persistent {
+                cloudSync.didOpen(cloudActive: persistence.isCloudActive, problem: persistence.cloudProblem)
+                presentAccountNoticeIfNeeded()
+            }
         case .failure:
             home = nil
             if let errorScreen = window?.rootViewController as? StorageUnavailableViewController {
@@ -51,6 +73,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// Shows the home screen for the session's selected fridge.
     private func show(_ session: AppSession, animated: Bool = false) {
+        currentSession = session
         let home = FridgeHomeViewController(session: session, entitlements: monetization.entitlementsForUI, ads: monetization.ads)
         home.onSwitchFridge = { [weak self] id, route in self?.switchFridge(to: id, from: session, then: route) }
         home.onDataRestored = { [weak self] failure in self?.reloadAfterRestore(from: session, failure: failure) }
@@ -99,6 +122,37 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             // The restored data is saved; only this screen couldn't be rebuilt.
             home?.showMessage("資料已還原，但畫面無法重新載入，請關閉並重新開啟 App")
         }
+    }
+
+    /// iCloud delivered changes: rebuild from the same container (fresh contexts) so every screen, the reminder
+    /// schedule and the widget snapshots reflect them. Only called while the user isn't in the middle of something.
+    private func reloadAfterCloudImport(from session: AppSession) {
+        guard case let .success(updated) = AppBootstrap.makeSession(container: session.container, mode: session.mode,
+                                                                    selection: session.selection) else { return }
+        show(updated)
+    }
+
+    /// Turning iCloud sync on/off reopens the store with the new setting. The old session is released first so
+    /// two containers never mirror the same store.
+    private func reopenStorage() {
+        cloudSync.stop()
+        window?.rootViewController = UIViewController()
+        home = nil
+        currentSession = nil
+        persistence = Self.makePersistence()
+        start()
+    }
+
+    /// Policy A: after an iCloud account change the data shown belongs to the new account. Explain once where the
+    /// previous data is and how to restore it (restoring is always the user's explicit choice).
+    private func presentAccountNoticeIfNeeded() {
+        guard CloudSyncSettings.shared.hasPendingAccountNotice, let home, home.canBeRebuilt else { return }
+        CloudSyncSettings.shared.hasPendingAccountNotice = false
+        let alert = UIAlertController(title: "iCloud 帳號已變更",
+                                      message: "冰箱管理員現在顯示這個 iCloud 帳號的資料。原本的資料保留在這台裝置的保護副本中，需要時可到「設定 → 資料管理 → iCloud 自動同步」還原（還原的資料會同步到目前這個帳號）。",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        home.present(alert, animated: true)
     }
 
     /// Production always uses the persistent store. In-memory storage is chosen only explicitly:

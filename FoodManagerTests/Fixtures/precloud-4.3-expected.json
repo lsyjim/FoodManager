@@ -1,0 +1,350 @@
+{
+  "applicationVersion" : "4.3-fixture",
+  "backupID" : "307EFA73-F47E-4314-9803-7B8B97438E0E",
+  "exportedAt" : 814343901.667373,
+  "foods" : [
+    {
+      "categoryID" : "other",
+      "compartmentID" : "BB117489-5244-4EAE-B02B-AA4FBBD8FC4B",
+      "createdAt" : 814343901.595392,
+      "expirationDate" : 800500000,
+      "fridgeID" : "2D61E17E-A3B2-4D14-A5F2-CEC93704ECD6",
+      "id" : "F80E2BFA-B448-4C4A-A75D-5985EE71FF9A",
+      "name" : "牛奶",
+      "quantity" : "1.5",
+      "storedAt" : 800000000,
+      "unit" : "個",
+      "updatedAt" : 814343901.595392
+    },
+    {
+      "categoryID" : "other",
+      "compartmentID" : "62C8FB50-F1C2-410D-94CC-512302389BFE",
+      "createdAt" : 814343901.602379,
+      "expirationDate" : 800500000,
+      "fridgeID" : "2D61E17E-A3B2-4D14-A5F2-CEC93704ECD6",
+      "id" : "E11A7291-1EAA-480D-BC9B-4F5338119B6C",
+      "name" : "冷凍水餃",
+      "quantity" : "20",
+      "storedAt" : 800000000,
+      "unit" : "個",
+      "updatedAt" : 814343901.602379
+    },
+    {
+      "categoryID" : "other",
+      "compartmentID" : "D576CFBC-3E9D-41B8-9716-4CA65327C925",
+      "createdAt" : 814343901.605958,
+      "expirationDate" : 800500000,
+      "fridgeID" : "310FEA54-311A-4131-853B-AD2C8628BE21",
+      "id" : "09FD0F38-D579-4D88-9F9A-E0E752FCC428",
+      "name" : "米",
+      "quantity" : "1",
+      "storedAt" : 800000000,
+      "unit" : "個",
+      "updatedAt" : 814343901.605958
+    },
+    {
+      "categoryID" : "other",
+      "compartmentID" : "BB117489-5244-4EAE-B02B-AA4FBBD8FC4B",
+      "consumedAt" : 800100000,
+      "createdAt" : 814343901.607529,
+      "expirationDate" : 800500000,
+      "fridgeID" : "2D61E17E-A3B2-4D14-A5F2-CEC93704ECD6",
+      "id" : "205EFC8C-4D04-4812-A459-A9E6C679C97B",
+      "name" : "優格",
+      "quantity" : "2",
+      "storedAt" : 800000000,
+      "unit" : "個",
+      "updatedAt" : 814343901.607529
+    }
+  ],
+  "formatVersion" : 2,
+  "fridges" : [
+    {
+      "cabinetCompartments" : [
+        {
+          "frame" : {
+            "height" : 0.22,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0
+          },
+          "id" : "BB117489-5244-4EAE-B02B-AA4FBBD8FC4B",
+          "name" : "上層",
+          "sortOrder" : 0,
+          "storageType" : "refrigerated",
+          "type" : "shelf",
+          "zone" : "cabinet"
+        },
+        {
+          "frame" : {
+            "height" : 0.22,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0.235
+          },
+          "id" : "69B62B35-F58F-4E0E-A9ED-20133A28DCE2",
+          "name" : "中層",
+          "sortOrder" : 1,
+          "storageType" : "refrigerated",
+          "type" : "shelf",
+          "zone" : "cabinet"
+        },
+        {
+          "frame" : {
+            "height" : 0.22,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0.47
+          },
+          "id" : "B63D9936-879B-45ED-A21A-EF4094F73940",
+          "name" : "下層",
+          "sortOrder" : 2,
+          "storageType" : "refrigerated",
+          "type" : "shelf",
+          "zone" : "cabinet"
+        },
+        {
+          "frame" : {
+            "height" : 0.24,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0.705
+          },
+          "id" : "62C8FB50-F1C2-410D-94CC-512302389BFE",
+          "name" : "蔬果抽屜",
+          "sortOrder" : 3,
+          "storageType" : "frozen",
+          "type" : "drawer",
+          "zone" : "cabinet"
+        }
+      ],
+      "createdAt" : 814343901.583672,
+      "doorCompartments" : [
+        {
+          "frame" : {
+            "height" : 0.28,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0
+          },
+          "id" : "DBB06B54-621C-488A-8C14-88DF21AA400A",
+          "name" : "門架 1",
+          "sortOrder" : 0,
+          "storageType" : "unspecified",
+          "type" : "doorShelf",
+          "zone" : "door"
+        },
+        {
+          "frame" : {
+            "height" : 0.28,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0.29500000000000004
+          },
+          "id" : "E458B010-2E46-42A1-9E68-4F692EF420F3",
+          "name" : "門架 2",
+          "sortOrder" : 1,
+          "storageType" : "unspecified",
+          "type" : "doorShelf",
+          "zone" : "door"
+        },
+        {
+          "frame" : {
+            "height" : 0.28,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0.5900000000000001
+          },
+          "id" : "3458BD2B-3CEB-4655-AB9A-9468171AA4DD",
+          "name" : "門架 3",
+          "sortOrder" : 2,
+          "storageType" : "unspecified",
+          "type" : "doorShelf",
+          "zone" : "door"
+        }
+      ],
+      "doorState" : "closed",
+      "id" : "2D61E17E-A3B2-4D14-A5F2-CEC93704ECD6",
+      "name" : "我的冰箱",
+      "templateID" : "standard.single-door.v1"
+    },
+    {
+      "cabinetCompartments" : [
+        {
+          "frame" : {
+            "height" : 0.22,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0
+          },
+          "id" : "1E4ABBF4-FD9E-491F-9C7B-97F219B79224",
+          "name" : "上層",
+          "sortOrder" : 0,
+          "storageType" : "refrigerated",
+          "type" : "shelf",
+          "zone" : "cabinet"
+        },
+        {
+          "frame" : {
+            "height" : 0.22,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0.235
+          },
+          "id" : "D576CFBC-3E9D-41B8-9716-4CA65327C925",
+          "name" : "中層",
+          "sortOrder" : 1,
+          "storageType" : "refrigerated",
+          "type" : "shelf",
+          "zone" : "cabinet"
+        },
+        {
+          "frame" : {
+            "height" : 0.22,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0.47
+          },
+          "id" : "2346D883-7BE8-455F-BCDD-AD4758AB7B17",
+          "name" : "下層",
+          "sortOrder" : 2,
+          "storageType" : "refrigerated",
+          "type" : "shelf",
+          "zone" : "cabinet"
+        },
+        {
+          "frame" : {
+            "height" : 0.24,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0.705
+          },
+          "id" : "944E4714-4CC9-4E78-8EB6-10341D5FE92E",
+          "name" : "蔬果抽屜",
+          "sortOrder" : 3,
+          "storageType" : "refrigerated",
+          "type" : "drawer",
+          "zone" : "cabinet"
+        }
+      ],
+      "createdAt" : 814343901.58998,
+      "doorCompartments" : [
+        {
+          "frame" : {
+            "height" : 0.28,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0
+          },
+          "id" : "21FD7DF9-47ED-4572-A8CA-CD7DFE1AB9E2",
+          "name" : "門架 1",
+          "sortOrder" : 0,
+          "storageType" : "unspecified",
+          "type" : "doorShelf",
+          "zone" : "door"
+        },
+        {
+          "frame" : {
+            "height" : 0.28,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0.29500000000000004
+          },
+          "id" : "D9E55BA7-A173-4FF7-8BCB-161A5078A7B9",
+          "name" : "門架 2",
+          "sortOrder" : 1,
+          "storageType" : "unspecified",
+          "type" : "doorShelf",
+          "zone" : "door"
+        },
+        {
+          "frame" : {
+            "height" : 0.28,
+            "width" : 1,
+            "x" : 0,
+            "y" : 0.5900000000000001
+          },
+          "id" : "AF04794E-9145-4F50-934A-7EA55CF9416B",
+          "name" : "門架 3",
+          "sortOrder" : 2,
+          "storageType" : "unspecified",
+          "type" : "doorShelf",
+          "zone" : "door"
+        }
+      ],
+      "doorState" : "closed",
+      "id" : "310FEA54-311A-4131-853B-AD2C8628BE21",
+      "name" : "儲藏室",
+      "templateID" : "standard.single-door.v1"
+    }
+  ],
+  "magnetImages" : [
+    {
+      "data" : "iVBORw0KGgoAAAANSUhEUgAAAEIAAAA8CAYAAADSfGxZAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAQqADAAQAAAABAAAAPAAAAACuT9+5AAAEMklEQVRoBe2aSWgUQRSGJ4tbXAPGxCAYT4J48SDqxQ23oIK4geQkRDwoIogIHvXiQdCLILkqRMwlIB5yUiIoIuJBISJqIAeTk0RNzGIWvyc2DDO9VFe\/rukZpuFnZqpevfe\/v1\/VdFd3Llc9qgpUFciiAvO5XCtoyiI3Z5wQoAvMgzlww1ngLAUi8Y7\/IogQHvZmiaMTLiT\/Ok8AT4heJ8GzEgQB1vuIIGJMghWl4FlbiqDEPB4QdxHthwP6Kq+Zs\/4ioCKkKnoqL2OfjEi0GcyGCDFG32Kfoak2lWJqHCOjsLhL6T+YatY+zsMI+ZirNAWtD\/nOTWzy7cvrOyW\/CkyHTAvvb\/Q7NvUus3NdEUdJboFBgo3Y7DGwUzNxLUScko9jqyZI6o4o9Qbw22BaeNNjGFtnJ8pZIJRuB0tiKN6C7Y4Y9olMXQphU+o2YxIJkupgSnwh+BFjWnjT42uqxFw7R4B2CxE8Mba44OtqaiQp8SRjjTWsCbLkDF6g7yzYAOIscn4u5a7SVvRZxk77OY3RNo7tZ3CPhB8aj0OEcwlK2SvprH4e8RMi6Cwd8DOukLbdfnkECdHvZ1whbS+N82Ba1IHeCpweXcYieIaIUAtugrBNlKyuA4W8psjjspeb1ScOdoIhUOi8XH4PwF3nWgRHjaCnDMWQB0gNVhUQNginnUD2FLNeDbKxk+6FGAE2grcZFuM53NaFnVC1PgLJTdRtIM8ss1Idf+ByHQRdEqjlX+SIoPuBbKCUWowvcNhWRNBlAwSawJMSivGA2Mtd5hwaCzIXwYRDQWR\/oyOUVKk6IbYZfHQgxhtiyF2x2qG6sHCL+wFmQ2rsgh0NEGswuDt+D\/70Ds7SarwNg7QfzvwkxhrIT2mxV60ISMlFTNoiSO7yDoXq81FtIU4LS0eHaiy1qcG0kDfjZFrUORLiF3FkekxqxNOsiBMORZDc5drhkHzRODSFUC1Vw+TUYqpMDaZFM8S\/AU1hTbQYw0imx4SJcZiNFnGZFra+5sIIRvQto1+eqSY+bMkXBrYtUamifeAUGC10avjbNrahe0MzpkULsNnXfMo4uQD7d\/C9DbwCce9kZaMo6QMoj4b9JyTkZisOeXl16AooWp9oqwe3QNx9jpP2GSiNhHQ\/MBVC9g22RoXGRvY5RmL4fRzlM9V+iLYC07PXja3x68XYyvuYfcBE5HHs9DdpTdUj+CUDokKy09Rnvh3jasA1INtwUYKUbtGE3LMIgu\/p35SfnM13fGwHgxGxum18Jx4DKXkSJm\/TB52p+\/Spreb4WgnCnq0MJU7KxgGk5PnoDCgUYpS21FZxfJ8Hfm\/njdjkoTIGQo9AvhDyD9Km4jzECTFkS\/BdQey7IUMiu4r+yyNH5BlARFbqq2At6AO9OKQ5\/YMgcrt\/BuwCn8AdYs\/wWT2qClQV0FPgL5GJScAdIzeGAAAAAElFTkSuQmCC",
+      "id" : "0F1074F1-E682-475D-9522-EF4FEB9F1B75"
+    }
+  ],
+  "magnets" : [
+    {
+      "centerX" : 0.52,
+      "centerY" : 0.48,
+      "createdAt" : 814343901.639773,
+      "fridgeID" : "2D61E17E-A3B2-4D14-A5F2-CEC93704ECD6",
+      "height" : 0.3,
+      "id" : "C6B33C5B-355D-47B8-91B3-9A0B92C318F1",
+      "localImageID" : "0F1074F1-E682-475D-9522-EF4FEB9F1B75",
+      "rotation" : 0,
+      "source" : "photo",
+      "style" : "squareFrame",
+      "updatedAt" : 814343901.639773,
+      "width" : 0.4,
+      "zIndex" : 2
+    },
+    {
+      "centerX" : 0.46,
+      "centerY" : 0.44,
+      "createdAt" : 814343901.639767,
+      "fridgeID" : "2D61E17E-A3B2-4D14-A5F2-CEC93704ECD6",
+      "height" : 0.2,
+      "id" : "001FBB4B-17FA-49E1-B57F-A0BC829C4452",
+      "localImageID" : "0F1074F1-E682-475D-9522-EF4FEB9F1B75",
+      "rotation" : 0,
+      "source" : "photo",
+      "style" : "stamp",
+      "updatedAt" : 814343901.639775,
+      "width" : 0.4,
+      "zIndex" : 1
+    },
+    {
+      "builtInAssetID" : "daisy",
+      "centerX" : 0.42,
+      "centerY" : 0.4,
+      "createdAt" : 814343901.639594,
+      "fridgeID" : "2D61E17E-A3B2-4D14-A5F2-CEC93704ECD6",
+      "height" : 0.2,
+      "id" : "BC6A30BB-8B41-4470-8DB9-36AE305E8E6A",
+      "rotation" : 0.4,
+      "source" : "builtIn",
+      "style" : "original",
+      "updatedAt" : 814343901.639764,
+      "width" : 0.3,
+      "zIndex" : 0
+    }
+  ],
+  "preferences" : {
+    "favoriteCategoryIDs" : [
+
+    ],
+    "favoriteFoods" : [
+
+    ],
+    "notifications" : {
+      "expirationLeadDays" : 1,
+      "expirationRemindersEnabled" : true,
+      "hasShownPermissionPrompt" : false,
+      "reminderHour" : 9,
+      "reminderMinute" : 0,
+      "storageRemindersEnabled" : true
+    }
+  }
+}
