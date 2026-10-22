@@ -1,0 +1,30 @@
+{
+  "identifier" : "6E4F2C1A-3B7D-4E59-9A1C-A10000000001",
+  "nonRenewingSubscriptions" : [],
+  "products" : [
+    {
+      "displayPrice" : "90.0",
+      "familyShareable" : false,
+      "internalID" : "6740000001",
+      "localizations" : [
+        {
+          "description" : "永久移除廣告，一次購買，非訂閱。",
+          "displayName" : "冰箱管理員完整版",
+          "locale" : "zh_Hant"
+        }
+      ],
+      "productID" : "FoodManager.HowCode.premium",
+      "referenceName" : "Premium (remove ads)",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_locale" : "zh_TW",
+    "_storefront" : "TWN"
+  },
+  "subscriptionGroups" : [],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

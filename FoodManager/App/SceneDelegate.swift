@@ -5,6 +5,14 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     private(set) var home: FridgeHomeViewController?
     private lazy var persistence = Self.makePersistence()
+    /// StoreKit + ads exist only in real runs (never in unit tests or UI tests).
+    private lazy var monetization: (entitlements: EntitlementService, ads: AdsCoordinator)? = {
+        guard persistence.mode == .persistent else { return nil }
+        let entitlements = EntitlementService(store: AppStoreClient())
+        entitlements.start()
+        let ads = AdsCoordinator(entitlements: entitlements, consent: GoogleConsentProvider(), sdk: GoogleAdSDK())
+        return (entitlements, ads)
+    }()
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
@@ -18,6 +26,12 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         if let url = connectionOptions.urlContexts.first?.url { AppNotificationRouter.shared.handle(url: url) }
     }
 
+    /// Refunds, purchases on other devices or Ask-to-Buy approvals may have happened while in the background.
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        guard let entitlements = monetization?.entitlements else { return }
+        Task { await entitlements.refresh() }
+    }
+
     /// Widget tap while running or restored from the background.
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
         guard let url = URLContexts.first?.url else { return }
@@ -28,7 +42,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func start() {
         switch AppBootstrap.start(persistence) {
         case let .success(session):
-            let home = FridgeHomeViewController(session: session)
+            let home = FridgeHomeViewController(session: session, entitlements: monetization?.entitlements, ads: monetization?.ads)
             self.home = home
             let navigation = UINavigationController(rootViewController: home)
             navigation.navigationBar.tintColor = Theme.Color.stroke

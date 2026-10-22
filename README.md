@@ -11,7 +11,7 @@
 
 - Xcode 26.3（以此版本建置與測試）
 - iOS 26.2 模擬器（iPhone 17、iPhone 16e、iPhone SE 第 3 代 已驗證）
-- 無第三方套件
+- 第三方套件：Google Mobile Ads SDK、Google User Messaging Platform（Swift Package Manager，只用於主 App 的廣告）
 
 ## 建置
 
@@ -95,6 +95,48 @@ xcodebuild -project FoodManager.xcodeproj -scheme FoodManager -destination 'plat
 ### 實機安裝前
 
 模擬器可直接執行。裝到實機前需在 Xcode 的 Signing & Capabilities 選擇你的 Team，並讓 App 與 `FoodManager.HowCode.Widgets` 兩個 target 都啟用同一個 App Group（`group.FoodManager.HowCode`），Xcode 會在你的開發者帳號註冊它。
+
+## 完整版與廣告（Phase 4）
+
+| 免費版 | 完整版（一次性購買，非訂閱） |
+|---|---|
+| 所有現有功能、食材數量不限、小工具 | 免費版全部功能 + 永久移除廣告 |
+| 關門首頁一個橫幅廣告 | 無廣告 |
+
+- **權限架構**：`EntitlementService` 是唯一判斷完整版的地方，只依 StoreKit 2 已驗證、未撤銷的 `Transaction.currentEntitlements`（離線也可用），從不以 UserDefaults 當作購買證明。功能以 `PremiumFeature` 檢查：`removeAds` 已生效；`multipleRefrigerators`、`advancedFridgeTemplates` 已定義但尚未實作，永遠不會啟用。
+- **StoreKit 2**：非消耗型商品 `FoodManager.HowCode.premium`（暫定，需與 App Store Connect 一致）。價格一律來自 StoreKit；處理購買成功、取消、待核准（Ask to Buy）、失敗、未驗證、退款／撤銷、恢復購買；啟動與回到前景時重新檢查。
+- **廣告**：Google Mobile Ads SDK 13 + UMP 3（Swift Package，只連結主 App，小工具不含任何廣告程式碼）。唯一版位是**關門首頁的錨定自適應橫幅**，放在底部按鈕上方；開門、編輯、新增／編輯食材、提醒中心、食用紀錄、設定、購買畫面、小工具都沒有廣告。
+  - 只有在：確認為免費版 → UMP 同意流程允許請求廣告 → SDK 已啟動 → 版面放得下時才請求。完整版使用者完全不會啟動廣告 SDK。
+  - 載入前與載入失敗都不佔空間；失敗後以 30 秒起倍增（最長 10 分鐘）重試；購買完整版後立即移除並釋放廣告。
+- **同意與隱私**：UMP 在需要的地區（如歐盟、英國）顯示同意訊息；需要時設定頁出現「廣告與隱私設定」。**未使用 App Tracking Transparency**（不讀取 IDFA、不顯示 ATT 提示）。App 本身的 `PrivacyInfo.xcprivacy` 只宣告 UserDefaults（CA92.1）；Google SDK 內附自己的隱私清單。
+- **設定**（首頁齒輪）：完整版／恢復購買、通知設定、廣告與隱私設定。
+
+### 用 Xcode 執行的測試版開關
+
+在 Xcode 以 Debug 執行（直接 ⌘R 到手機或模擬器）時，設定頁最下方有「開發者測試」：
+
+- **版本**：依購買紀錄／免費版／完整版（只改畫面上的狀態，不會產生購買）。
+- **顯示廣告**：開關廣告。
+- **廣告狀態**、**重設廣告同意狀態**（下次回到首頁重新跑 UMP 流程）。
+
+這些開關在 Release（TestFlight、App Store）版本中完全不存在。Debug 版也會使用 `Config/FoodManager.storekit` 做本機 StoreKit 測試購買（Xcode 的 Run 會自動帶入；在 Xcode 的 Debug → StoreKit → Manage Transactions 可清除或退款）。
+
+### AdMob 設定（上架前必做）
+
+目前 `ADMOB_APP_ID`、`ADMOB_BANNER_UNIT_ID`（Build Settings，App target）在 Debug 與 Release 都是 **Google 官方測試 ID**。Release 版偵測到測試 ID 時會完全不顯示廣告，避免把測試廣告給真實使用者。上架前：
+
+1. 在 AdMob 建立 iOS App 與一個「橫幅」廣告單元。
+2. 把 Release 的 `ADMOB_APP_ID`、`ADMOB_BANNER_UNIT_ID` 改成正式 ID（Debug 保留測試 ID）。
+3. 在 AdMob「隱私權與訊息」建立 GDPR（以及需要的美國州別）訊息，UMP 才會在對應地區顯示。
+4. `Config/FoodManager-Info.plist` 的 `SKAdNetworkItems` 目前只有 Google 的項目，請依 Google 文件補上完整清單。
+5. 在 App 網站放 `app-ads.txt`。
+
+### App Store Connect（上架前必做）
+
+1. 建立非消耗型 App 內購買項目，產品 ID `FoodManager.HowCode.premium`（若改 ID，同步修改 `StoreProducts.premium` 與 `.storekit`），設定價格、中文名稱「冰箱管理員完整版」與說明、審查截圖。
+2. 接受付費 App 協議並完成稅務與銀行資料。
+3. **App 隱私問卷**：因為使用 Google Mobile Ads，需申報廣告 SDK 收集的資料（如裝置 ID、產品互動、廣告資料、粗略位置、診斷等，以 Google 的說明為準），用途包含「第三方廣告」。不可填寫「不收集任何資料」。
+4. 用沙盒帳號或 TestFlight 實測購買與恢復購買。
 
 ## 圖片素材
 

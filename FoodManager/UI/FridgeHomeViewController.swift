@@ -39,6 +39,23 @@ final class FridgeHomeViewController: UIViewController {
     private lazy var editButton = UIButton.sketchButton(title: "編輯", systemImage: "square.and.pencil")
     private lazy var cancelButton = UIButton.sketchButton(title: "取消")
     private lazy var saveButton = UIButton.sketchButton(title: "儲存", filled: true)
+    private lazy var settingsButton: UIButton = {
+        let button = UIButton.sketchButton(title: "", systemImage: "gearshape")
+        button.accessibilityLabel = "設定"
+        button.accessibilityIdentifier = "home.settings"
+        button.widthAnchor.constraint(greaterThanOrEqualToConstant: Theme.Metric.minTouchTarget).isActive = true
+        return button
+    }()
+
+    // Monetization (nil in tests / UI tests: no StoreKit, no ads).
+    private let entitlements: EntitlementService?
+    private let ads: AdsCoordinator?
+    /// Closed-home banner; only placement in the app.
+    private lazy var bannerContainer: BannerAdContainerView? = ads.map { ads in
+        BannerAdContainerView(makeLoader: makeBannerLoader ?? { GoogleBannerLoader(unitID: ads.configuration.bannerUnitID) })
+    }
+    private let makeBannerLoader: (() -> BannerAdLoading)?
+
     private lazy var reminderButton: UIButton = {
         let button = UIButton.sketchButton(title: "", systemImage: "bell")
         button.accessibilityLabel = "食材提醒"
@@ -73,8 +90,12 @@ final class FridgeHomeViewController: UIViewController {
     /// Only persistent storage publishes widget snapshots; temporary in-memory sessions (tests, UI tests)
     /// never overwrite what the user's widgets show.
     init(session: AppSession, notificationClient: NotificationClient = SystemNotificationClient(),
-         widgetPublisher: WidgetSnapshotPublisher? = nil) {
+         widgetPublisher: WidgetSnapshotPublisher? = nil, entitlements: EntitlementService? = nil,
+         ads: AdsCoordinator? = nil, makeBannerLoader: (() -> BannerAdLoading)? = nil) {
         self.notificationClient = notificationClient
+        self.entitlements = entitlements
+        self.ads = ads
+        self.makeBannerLoader = makeBannerLoader
         self.widgetPublisher = widgetPublisher
             ?? (session.mode == .persistent ? WidgetSnapshotPublisher() : WidgetSnapshotPublisher(file: nil))
         store = session.fridgeStore
@@ -168,6 +189,7 @@ final class FridgeHomeViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         AppNotificationRouter.shared.attach(self)
+        prepareAdsIfNeeded()
         if layoutRecovery.needsConfirmation && !hasPresentedRecoveryNotice {
             hasPresentedRecoveryNotice = true
             presentRecoveryNotice()
@@ -260,7 +282,7 @@ final class FridgeHomeViewController: UIViewController {
         titles.axis = .vertical
         titles.spacing = 2
 
-        let buttons = UIStackView(arrangedSubviews: [reminderButton, editButton, cancelButton, saveButton])
+        let buttons = UIStackView(arrangedSubviews: [settingsButton, reminderButton, editButton, cancelButton, saveButton])
         buttons.spacing = 8
         buttons.setContentCompressionResistancePriority(.required, for: .horizontal)
 
@@ -317,6 +339,7 @@ final class FridgeHomeViewController: UIViewController {
         footer.axis = .vertical
         footer.spacing = 8
         footer.addArrangedSubview(statusBanner)
+        if let bannerContainer { footer.addArrangedSubview(bannerContainer) }
         footer.addArrangedSubview(actionBar)
         footer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(footer)
@@ -433,6 +456,10 @@ final class FridgeHomeViewController: UIViewController {
         fridgeView.summaryProvider = { [weak self] id in self?.inventory.contentSummary(for: id) ?? .empty }
         searchButton.addAction(UIAction { [weak self] _ in self?.openSearch() }, for: .touchUpInside)
         reminderButton.addAction(UIAction { [weak self] _ in self?.openReminderCenter() }, for: .touchUpInside)
+        settingsButton.addAction(UIAction { [weak self] _ in self?.openSettings() }, for: .touchUpInside)
+        for name in [Notification.Name.entitlementsDidChange, .adAvailabilityDidChange] {
+            NotificationCenter.default.addObserver(self, selector: #selector(monetizationChanged), name: name, object: nil)
+        }
         dashboardView.onSelectReminder = { [weak self] kind, storage in self?.openReminderCenter(kind: kind, storage: storage) }
         addFoodButton.addAction(UIAction { [weak self] _ in self?.openFoodEditor(.add(compartmentID: nil)) }, for: .touchUpInside)
         closeDoorButton.accessibilityLabel = "關上冰箱"
@@ -450,6 +477,8 @@ final class FridgeHomeViewController: UIViewController {
         saveButton.isHidden = !isEditingLayout
         editBar.isHidden = !isEditingLayout
         reminderButton.isHidden = isEditingLayout
+        settingsButton.isHidden = isEditingLayout
+        updateBanner()
         actionBar.isHidden = isEditingLayout
         updateStatusBanner()
         fridgeCenteredWhenBrowsing?.isActive = !isEditingLayout
@@ -638,6 +667,58 @@ final class FridgeHomeViewController: UIViewController {
         case .missing:
             FoodActions.showError("這項食材已被食用或刪除。", on: host.presentedViewController ?? host)
         }
+    }
+
+    // MARK: - Settings & ads
+
+    func openSettings() {
+        guard !isEditingLayout else { return }
+        let settings = SettingsViewController(entitlements: entitlements, ads: ads, notifications: notifications)
+        navigationController?.pushViewController(settings, animated: true)
+    }
+
+    @objc private func monetizationChanged() {
+        prepareAdsIfNeeded()
+        updateBanner()
+    }
+
+    /// Consent + SDK start, only for free users and only while the closed home is on screen
+    /// (the consent form is presented from here).
+    private func prepareAdsIfNeeded() {
+        guard let ads, viewIfLoaded?.window != nil, presentedViewController == nil,
+              navigationController?.topViewController === self else { return }
+        Task { @MainActor in await ads.prepareIfNeeded(from: self) }
+    }
+
+    /// The screen currently showing, for ad placement rules.
+    var currentScreen: AppScreen {
+        if isEditingLayout { return .layoutEditing }
+        return fridge.lastDoorState == .open ? .openFridge : .closedHome
+    }
+
+    /// Shows the banner only on the closed home, for eligible free users, when it fits; otherwise removes it.
+    private func updateBanner() {
+        guard let ads, let bannerContainer else { return }
+        let reserved: CGFloat = bannerContainer.isLoaded ? 0 : Self.expectedBannerHeight
+        let available = closedContainer.bounds.height == 0 ? .greatestFiniteMagnitude : closedContainer.bounds.height - reserved
+        let allowed = ads.eligibility.allows(.closedHomeBanner, on: currentScreen, contentHeightAfterBanner: available)
+        if allowed {
+            bannerContainer.activate(width: footer.bounds.width > 0 ? footer.bounds.width : view.bounds.width - 2 * Theme.Metric.gutter,
+                                     rootViewController: self)
+        } else {
+            // Premium, no consent, other screen, or no room: stop requesting and release the ad view.
+            bannerContainer.deactivate()
+        }
+    }
+
+    /// Conservative height reserved when checking whether a banner fits before it has loaded.
+    static let expectedBannerHeight: CGFloat = 90
+
+    var isShowingBanner: Bool { bannerContainer?.isLoaded == true && bannerContainer?.isHidden == false }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        updateBanner()
     }
 
     private func openNotificationSettings(from presenter: UIViewController?) {
