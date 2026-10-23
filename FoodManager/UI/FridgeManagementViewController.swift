@@ -133,7 +133,18 @@ final class FridgeManagementViewController: UITableViewController {
         reload()
     }
 
+    // MARK: - Shared rows (section 1, after 新增冰箱)
+
+    private enum SharedRow { case join, entry(InactiveSharedEntry) }
+    private var sharedRows: [SharedRow] = []
+
+    private func reloadSharedRows() {
+        guard let sharing, sharing.policy.joinGate == .allowed else { return sharedRows = [] }
+        sharedRows = sharing.inactiveEntries().map(SharedRow.entry) + [.join]
+    }
+
     @objc private func reload() {
+        reloadSharedRows()
         unplacedCount = (try? directory.unplacedItems().count) ?? 0
         tableView.reloadData()
     }
@@ -151,7 +162,7 @@ final class FridgeManagementViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch section {
         case 0: return directory.fridges.count
-        case 1: return 1
+        case 1: return 1 + sharedRows.count
         default: return attention.count
         }
     }
@@ -248,6 +259,20 @@ final class FridgeManagementViewController: UITableViewController {
             content.imageProperties.maximumSize = CGSize(width: 28, height: 40)
             cell.accessoryType = fridge.id == currentFridgeID() ? .checkmark : .none
             cell.accessibilityValue = fridge.id == currentFridgeID() ? "目前使用中" : nil
+        } else if indexPath.row > 0, let row = sharedRows[safeIndex: indexPath.row - 1] {
+            switch row {
+            case .join:
+                content.text = "用邀請連結加入共享冰箱"
+                content.image = UIImage(systemName: "link")
+                content.imageProperties.tintColor = Theme.Color.stroke
+                cell.accessibilityIdentifier = "fridgeManagement.join"
+            case let .entry(entry):
+                content.text = entry.name
+                content.secondaryText = entry.ownership.selectorLabel
+                content.image = UIImage(systemName: entry.ownership == .unavailableOrRevoked ? "exclamationmark.triangle" : "hourglass")
+                content.imageProperties.tintColor = Theme.Color.textSecondary
+                content.textProperties.color = Theme.Color.textSecondary
+            }
         } else {
             content.text = "新增冰箱"
             content.image = UIImage(systemName: "plus")
@@ -263,6 +288,12 @@ final class FridgeManagementViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         if indexPath.section == 2 { return handleAttention(attention[indexPath.row], at: indexPath) }
+        if indexPath.section == 1, indexPath.row > 0, let row = sharedRows[safeIndex: indexPath.row - 1] {
+            switch row {
+            case .join: return presentJoin()
+            case let .entry(entry): return handleInactive(entry, at: indexPath)
+            }
+        }
         guard indexPath.section == 0 else {
             let current = directory.fridge(id: currentFridgeID())
             return FridgeActions.presentAdd(directory: directory, copyFrom: current, from: self) { [weak self] fridge in
@@ -296,6 +327,11 @@ final class FridgeManagementViewController: UITableViewController {
             sheet.addAction(UIAlertAction(title: "重新命名", style: .default) { [weak self] _ in
                 guard let self else { return }
                 FridgeActions.presentRename(fridge, directory: self.directory, from: self) { [weak self] in self?.reload() }
+            })
+        }
+        if let sharing, ownership == .sharedParticipant {
+            sheet.addAction(UIAlertAction(title: "離開共享冰箱", style: .destructive) { [weak self] _ in
+                self?.confirmLeave(fridge.id, name: fridge.name, sharing: sharing)
             })
         }
         if directory.fridges.count > 1 && ownership == .personalOwned {
@@ -360,4 +396,97 @@ final class FridgeManagementViewController: UITableViewController {
         activity.popoverPresentationController?.sourceView = tableView.cellForRow(at: indexPath) ?? view
         present(activity, animated: true)
     }
+
+    // MARK: - Joining and leaving (Phase 5D-4)
+
+    private func presentJoin() {
+        guard let sharing else { return }
+        let alert = UIAlertController(title: "加入共享冰箱",
+                                      message: "貼上家人傳來的邀請連結。送出申請後，要等冰箱主人同意才看得到內容。",
+                                      preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "https://www.icloud.com/share/…"
+            field.text = UIPasteboard.general.hasURLs ? UIPasteboard.general.url?.absoluteString : nil
+            field.keyboardType = .URL
+            field.autocapitalizationType = .none
+            field.accessibilityIdentifier = "fridgeManagement.joinLink"
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "送出", style: .default) { [weak self] _ in
+            let text = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard let self else { return }
+            guard let url = URL(string: text) else { return FoodActions.showError(JoinError.invalidLink.message, on: self) }
+            self.run({ try await sharing.join(url: url) }) { [weak self] outcome in
+                guard let self else { return }
+                switch outcome {
+                case let .joined(id), let .alreadyJoined(id):
+                    self.onSelect(id)
+                case .waitingForApproval:
+                    FoodActions.showError("已送出加入申請，冰箱主人同意後就會出現在這裡。", on: self)
+                case .ownFridge:
+                    FoodActions.showError("這是你自己共享的冰箱。", on: self)
+                }
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    private func handleInactive(_ entry: InactiveSharedEntry, at indexPath: IndexPath) {
+        guard let sharing else { return }
+        let sheet = UIAlertController(title: entry.name, message: entry.ownership.selectorLabel, preferredStyle: .actionSheet)
+        if entry.isRequest {
+            sheet.addAction(UIAlertAction(title: "取消申請", style: .destructive) { [weak self] _ in
+                try? sharing.cancelInvitation(entry.id)
+                self?.reload()
+            })
+        } else {
+            sheet.addAction(UIAlertAction(title: entry.ownership == .unavailableOrRevoked ? "從列表移除" : "離開共享冰箱",
+                                          style: .destructive) { [weak self] _ in
+                self?.run({ try await sharing.leave(fridgeID: entry.id) }) { [weak self] _ in self?.reload() }
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = tableView.cellForRow(at: indexPath)
+        present(sheet, animated: true)
+    }
+
+    private func confirmLeave(_ fridgeID: UUID, name: String, sharing: SharingService) {
+        let alert = UIAlertController(title: "離開「\(name)」？", message: "離開後這台冰箱會從你的裝置移除，冰箱主人和其他成員的資料不受影響。要再加入，需要重新申請。",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "離開", style: .destructive) { [weak self] _ in
+            self?.run({ try await sharing.leave(fridgeID: fridgeID) }) { [weak self] _ in
+                guard let self else { return }
+                if fridgeID == self.currentFridgeID(), let other = self.directory.fridges.first(where: { $0.id != fridgeID }) {
+                    self.onSelect(other.id)
+                } else {
+                    self.onSelect(self.currentFridgeID())
+                }
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    /// One server action with a progress alert; the result is shown only after the server answered.
+    private func run<T>(_ action: @escaping () async throws -> T, then: @escaping (T) -> Void) {
+        let progress = UIAlertController(title: "請稍候…", message: nil, preferredStyle: .alert)
+        present(progress, animated: true)
+        Task { @MainActor [weak self] in
+            do {
+                let value = try await action()
+                progress.dismiss(animated: true) { then(value) }
+            } catch {
+                let message = (error as? JoinError)?.message ?? (error as? SharingServiceError)?.message
+                    ?? (error as? SharedStoreError)?.message ?? "無法完成，請稍後再試。"
+                progress.dismiss(animated: true) {
+                    guard let self else { return }
+                    FoodActions.showError(message, on: self)
+                }
+            }
+        }
+    }
+}
+
+private extension Array {
+    subscript(safeIndex index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }

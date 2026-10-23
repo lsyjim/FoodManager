@@ -161,6 +161,9 @@ enum AppBootstrap {
             let imageDirectory = MagnetImageStore.directory(for: container)
             let magnets = MagnetLibrary(store: magnetStore, images: MagnetImageStore(directory: imageDirectory))
             directory.onFridgeDeleted = { magnets.removeUnreferencedImages() }
+            if let shared = sharing?.inventory {
+                directory.reservedSlots = { (try? shared.store.reservedSlots()) ?? 0 }
+            }
             return .success(AppSession(fridgeStore: fridgeStore, foodStore: foodStore, loadResult: directory.selected,
                                        mode: mode, directory: directory, container: container, selection: selection,
                                        magnets: magnets, sharing: sharing))

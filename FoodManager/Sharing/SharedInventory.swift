@@ -42,6 +42,10 @@ final class SharedInventory {
         (try? fridgeRow(fridgeID, in: store.makeContext()))?.ownership
     }
 
+    func zoneOwnerName(of fridgeID: UUID) -> String? {
+        (try? fridgeRow(fridgeID, in: store.makeContext()))?.zoneOwnerName
+    }
+
     func invitationURL(for fridgeID: UUID) -> URL? {
         guard let row = try? fridgeRow(fridgeID, in: store.makeContext()), row.role == .owner else { return nil }
         return row.inventoryShareURL.flatMap(URL.init(string:))

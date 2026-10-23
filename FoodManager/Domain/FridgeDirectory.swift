@@ -77,7 +77,9 @@ final class FridgeDirectory {
     }
 
     var fridges: [Fridge] { results.map(\.fridge) }
-    var canAddFridge: Bool { results.count < FridgePolicy.maxRefrigerators }
+    /// Slots held by shared fridges that aren't usable yet (access requests waiting for approval, joins in progress).
+    var reservedSlots: () -> Int = { 0 }
+    var canAddFridge: Bool { results.count + reservedSlots() < FridgePolicy.maxRefrigerators }
 
     /// The stored selection if it still exists, otherwise the oldest fridge.
     var selectedID: UUID {

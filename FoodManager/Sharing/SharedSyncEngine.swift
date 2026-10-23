@@ -237,3 +237,51 @@ struct SharedFetchScheduler: Equatable {
         consecutiveFailures = success ? 0 : min(consecutiveFailures + 1, 10)
     }
 }
+
+/// Drives `SharedFetchScheduler` with a timer on the main thread. Push notifications stay the main signal; this only
+/// covers missed pushes while a shared fridge is on screen.
+@MainActor
+final class SharedFetchPoller {
+    static let tick: TimeInterval = 5
+    private(set) var scheduler = SharedFetchScheduler()
+    private var timer: Timer?
+    private let fetch: () async throws -> Void
+    private let now: () -> Date
+
+    init(now: @escaping () -> Date = Date.init, fetch: @escaping () async throws -> Void) {
+        self.fetch = fetch
+        self.now = now
+    }
+
+    var isRunning: Bool { timer != nil }
+
+    func update(sharedFridgeVisible: Bool? = nil, appActive: Bool? = nil) {
+        if let sharedFridgeVisible { scheduler.sharedFridgeVisible = sharedFridgeVisible }
+        if let appActive { scheduler.appActive = appActive }
+        if scheduler.sharedFridgeVisible && scheduler.appActive {
+            if timer == nil {
+                timer = Timer.scheduledTimer(withTimeInterval: Self.tick, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.tickNow() }
+                }
+            }
+            tickNow()
+        } else {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+
+    /// One scheduler check (the timer calls this; tests call it directly).
+    func tickNow() {
+        guard scheduler.beginIfDue(now: now()) else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.fetch()
+                self.scheduler.finish(success: true)
+            } catch {
+                self.scheduler.finish(success: false)
+            }
+        }
+    }
+}

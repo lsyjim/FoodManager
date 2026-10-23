@@ -150,6 +150,20 @@ final class SharedMagnetRecord {
     }
 }
 
+/// An access request this user sent (the owner hasn't approved it yet). Nothing about the fridge is known before
+/// approval — only the link the user opened.
+@Model
+final class SharedInvitationRecord {
+    var id: UUID = UUID()
+    var url: String = ""
+    var requestedAt: Date = Date.now
+
+    init(url: URL, requestedAt: Date) {
+        self.url = url.absoluteString
+        self.requestedAt = requestedAt
+    }
+}
+
 /// `CKSyncEngine.State.Serialization` per database scope.
 @Model
 final class SharedSyncStateRecord {
@@ -172,7 +186,7 @@ final class SharedStore {
     }
 
     static let schema = Schema([SharedFridgeRecord.self, SharedFoodRecord.self, SharedQuantityOpRecord.self,
-                                SharedMagnetRecord.self, SharedSyncStateRecord.self])
+                                SharedMagnetRecord.self, SharedSyncStateRecord.self, SharedInvitationRecord.self])
 
     /// Next to the main store (App Group container), as a separate file.
     static var defaultURL: URL {
@@ -218,7 +232,56 @@ final class SharedStore {
         return QuantityLedger.quantity(base: food.baseQuantity, folded: Set(food.foldedOpIDs), ops: ops.map(\.op))
     }
 
+    func invitations() throws -> [SharedInvitation] {
+        try makeContext().fetch(FetchDescriptor<SharedInvitationRecord>(sortBy: [SortDescriptor(\.requestedAt)]))
+            .compactMap { row in URL(string: row.url).map { SharedInvitation(id: row.id, url: $0, requestedAt: row.requestedAt) } }
+    }
+
+    /// Fridges and requests that hold one of the two slots without being usable yet (pending requests and joins).
+    func reservedSlots() throws -> Int {
+        try invitations().count + fridges().filter { $0.ownership == .pendingInvitation }.count
+    }
+
     // MARK: Writes
+
+    @discardableResult
+    func addInvitation(url: URL, at date: Date = .now) throws -> UUID {
+        let context = makeContext()
+        let text = url.absoluteString
+        if let existing = try context.fetch(FetchDescriptor<SharedInvitationRecord>(predicate: #Predicate { $0.url == text })).first {
+            return existing.id
+        }
+        let row = SharedInvitationRecord(url: url, requestedAt: date)
+        context.insert(row)
+        try context.save()
+        return row.id
+    }
+
+    func removeInvitation(id: UUID) throws {
+        let context = makeContext()
+        try context.fetch(FetchDescriptor<SharedInvitationRecord>(predicate: #Predicate { $0.id == id })).forEach(context.delete)
+        try context.save()
+    }
+
+    /// A member just accepted an inventory share: a placeholder until the fridge's records arrive.
+    func addJoiningFridge(id: UUID, ownerName: String) throws {
+        let context = makeContext()
+        guard try context.fetch(FetchDescriptor<SharedFridgeRecord>(predicate: #Predicate { $0.id == id })).isEmpty else { return }
+        let row = SharedFridgeRecord(id: id, role: .participant, zoneOwnerName: ownerName)
+        row.statusRaw = SharedFridgeStatus.pendingApproval.rawValue
+        row.isShared = true
+        context.insert(row)
+        try context.save()
+    }
+
+    /// Members whose structure share still has to be joined (link known, structure not readable yet).
+    func pendingStructureJoins() throws -> [(fridgeID: UUID, ownerName: String, url: URL)] {
+        try makeContext().fetch(FetchDescriptor<SharedFridgeRecord>()).compactMap { row in
+            guard row.role == .participant, row.layoutData.isEmpty, row.status != .unavailable,
+                  let text = row.structureShareURL, let url = URL(string: text) else { return nil }
+            return (row.id, row.zoneOwnerName, url)
+        }
+    }
 
     /// Records a quantity change as a new op (the caller queues its upload). Returns the op ID.
     @discardableResult
@@ -273,6 +336,12 @@ final class SharedStore {
             try purgeFridge(fridge.id, keepPlaceholder: false)
         }
     }
+}
+
+struct SharedInvitation: Equatable {
+    let id: UUID
+    let url: URL
+    let requestedAt: Date
 }
 
 /// Value copy of a shared fridge row (models never leave their context).

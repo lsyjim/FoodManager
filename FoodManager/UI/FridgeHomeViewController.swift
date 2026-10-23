@@ -16,6 +16,8 @@ final class FridgeHomeViewController: UIViewController {
     private let makeBackupService: () -> BackupService
     /// Shared refrigerators (nil while sharing is off: no labels, no entry points).
     private let sharing: SharingService?
+    /// Whether this home screen (and so a shared fridge, if it is one) is on screen.
+    var onVisibilityChange: ((_ visible: Bool, _ isSharedFridge: Bool) -> Void)?
     private let magnetLibrary: MagnetLibrary
     /// Magnets on the closed door: display only, so taps still open the fridge.
     private lazy var magnetBoard = MagnetBoardView(template: template, library: magnetLibrary)
@@ -288,10 +290,21 @@ final class FridgeHomeViewController: UIViewController {
         super.viewDidAppear(animated)
         AppNotificationRouter.shared.attach(self)
         prepareAdsIfNeeded()
+        onVisibilityChange?(true, isSharedFridge)
         if layoutRecovery.needsConfirmation && !hasPresentedRecoveryNotice {
             hasPresentedRecoveryNotice = true
             presentRecoveryNotice()
         }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        onVisibilityChange?(false, isSharedFridge)
+    }
+
+    private var isSharedFridge: Bool {
+        guard let ownership = sharing?.ownership(of: fridge.id) else { return false }
+        return ownership == .sharedOwned || ownership == .sharedParticipant
     }
 
     // MARK: - Status banner (load failure, unplaced food, pending layout repair)

@@ -23,6 +23,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// creates them.
     private var sharedEngine: SharedSyncEngine?
     private var sharedInventory: SharedInventory?
+    /// 30-second fallback fetch while a shared fridge is on screen and the app is active.
+    private var sharedPoller: SharedFetchPoller?
     /// Built once from `MonetizationPolicy` (survives storage retries and fridge switches).
     private lazy var monetization = MonetizationServices.make(policy: .current, mode: persistence.mode)
 
@@ -49,6 +51,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func sceneWillEnterForeground(_ scene: UIScene) {
         monetization.ads?.appWillEnterForeground()
         if persistence.mode == .persistent { cloudSync.checkAccount() }
+        checkSharedInvitations()
         guard let entitlements = monetization.entitlementObserver else { return }
         Task { await entitlements.refresh() }
     }
@@ -68,8 +71,28 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Someone opened a shared-fridge link. Ignored entirely while sharing is off (never accepted, no paywall);
     /// requesting access as a participant arrives in Phase 5D-4.
     func windowScene(_ windowScene: UIWindowScene, userDidAcceptCloudKitShareWith metadata: CKShare.Metadata) {
-        guard SharingPolicy.current.joinGate == .allowed, currentSession?.sharing != nil else { return }
-        home?.showMessage("這個版本還不能加入共享冰箱。")
+        guard SharingPolicy.current.joinGate == .allowed, let sharing = currentSession?.sharing, let url = metadata.share.url else { return }
+        openInvitation(url, sharing: sharing)
+    }
+
+    /// Joins (if the owner already approved) or sends an access request, and tells the user which.
+    private func openInvitation(_ url: URL, sharing: SharingService) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                switch try await sharing.join(url: url) {
+                case .joined:
+                    self.home?.showMessage("已加入共享冰箱，資料下載中…")
+                    self.sharedDataChanged()
+                case .alreadyJoined: self.home?.showMessage("你已經是這台冰箱的成員")
+                case .ownFridge: self.home?.showMessage("這是你自己共享的冰箱")
+                case .waitingForApproval: self.home?.showMessage("已送出加入申請，等待冰箱主人同意")
+                }
+            } catch {
+                let message = (error as? JoinError)?.message ?? (error as? SharingServiceError)?.message ?? "無法開啟這個邀請，請稍後再試。"
+                self.home?.showMessage(message)
+            }
+        }
     }
 
     /// (Re)attempts to open storage. Called at launch and by the error screen's retry button.
@@ -99,6 +122,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let home = FridgeHomeViewController(session: session, entitlements: monetization.entitlementsForUI, ads: monetization.ads)
         home.onSwitchFridge = { [weak self] id, route in self?.switchFridge(to: id, from: session, then: route) }
         home.onDataRestored = { [weak self] failure in self?.reloadAfterRestore(from: session, failure: failure) }
+        home.onVisibilityChange = { [weak self] visible, isShared in
+            MainActor.assumeIsolated { self?.sharedPoller?.update(sharedFridgeVisible: visible && isShared) }
+        }
         self.home = home
         let navigation = UINavigationController(rootViewController: home)
         navigation.navigationBar.tintColor = Theme.Color.stroke
@@ -159,6 +185,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// two containers never mirror the same store.
     private func reopenStorage() {
         cloudSync.stop()
+        MainActor.assumeIsolated { sharedPoller?.update(sharedFridgeVisible: false) }
+        sharedPoller = nil
         sharedEngine = nil
         sharedInventory = nil
         window?.rootViewController = UIViewController()
@@ -176,6 +204,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             sharedEngine = SharedSyncEngine.make(policy: policy, mode: persistence.mode, cloudSyncEnabled: CloudSyncSettings.shared.isEnabled)
             sharedEngine?.onChange = { [weak self] in self?.sharedDataChanged() }
             sharedEngine?.start()
+            if let engine = sharedEngine {
+                sharedPoller = MainActor.assumeIsolated {
+                    let poller = SharedFetchPoller { [weak engine] in try await engine?.fetchChanges() }
+                    poller.update(appActive: UIApplication.shared.applicationState == .active)
+                    return poller
+                }
+            }
         }
         guard let engine = sharedEngine else { return nil }
         let inventory = sharedInventory ?? SharedInventory(store: engine.store)
@@ -184,7 +219,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         return SharingService(policy: policy, inventory: inventory, cloud: CloudKitSharingCloud(engine: engine),
                               personal: SwiftDataFridgeStore(container: container),
                               hasPremium: { [weak self] in self?.monetization.entitlementObserver?.isPremium ?? false },
-                              snapshots: .shared, administrator: Self.makeAdministrator(engine))
+                              snapshots: .shared, administrator: Self.makeAdministrator(engine),
+                              participantCloud: Self.makeParticipantCloud(engine))
     }
 
     private static func makeAdministrator(_ engine: SharedSyncEngine) -> ShareAdministering? {
@@ -192,8 +228,31 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         return CloudKitShareAdministrator(container: engine.cloudContainer)
     }
 
+    private static func makeParticipantCloud(_ engine: SharedSyncEngine) -> ParticipantCloud? {
+        guard #available(iOS 26.0, *) else { return nil }
+        return CloudKitParticipantCloud(container: engine.cloudContainer, engine: engine)
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        MainActor.assumeIsolated { sharedPoller?.update(appActive: true) }
+    }
+
+    func sceneWillResignActive(_ scene: UIScene) {
+        MainActor.assumeIsolated { sharedPoller?.update(appActive: false) }
+    }
+
+    /// Requests the owner approved while the app was away are joined now.
+    private func checkSharedInvitations() {
+        guard let sharing = currentSession?.sharing else { return }
+        Task { @MainActor [weak self] in
+            if !(await sharing.checkPendingInvitations()).isEmpty { self?.sharedDataChanged() }
+        }
+    }
+
     /// Shared-fridge changes arrived: rebuild like after an iCloud import, at a calm moment only.
     private func sharedDataChanged() {
+        // A newly readable inventory may carry the link to its read-only structure share.
+        if let sharing = currentSession?.sharing { Task { await sharing.continueStructureJoins() } }
         guard let session = currentSession, home?.canBeRebuilt == true else { return }
         reloadAfterCloudImport(from: session)
     }

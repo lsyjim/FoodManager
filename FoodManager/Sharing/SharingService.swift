@@ -45,19 +45,22 @@ final class SharingService {
     let policy: SharingPolicy
     let inventory: SharedInventory
     private let cloud: SharingCloud
-    private let personal: SwiftDataFridgeStore
+    let personal: SwiftDataFridgeStore
     private let hasPremium: () -> Bool
     private let snapshots: ProtectionSnapshots?
     private let defaults: UserDefaults
     /// Request / member management on the server (nil before iOS 26 or in tests that don't need it).
     let administrator: ShareAdministering?
+    /// Joining and leaving as a member (nil before iOS 26 or in tests that don't need it).
+    let participantCloud: ParticipantCloud?
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "Sharing")
     static let pendingRemovalKey = "sharing.pendingPersonalRemoval"
 
     init(policy: SharingPolicy, inventory: SharedInventory, cloud: SharingCloud, personal: SwiftDataFridgeStore,
          hasPremium: @escaping () -> Bool, snapshots: ProtectionSnapshots?, defaults: UserDefaults = .standard,
-         administrator: ShareAdministering? = nil) {
+         administrator: ShareAdministering? = nil, participantCloud: ParticipantCloud? = nil) {
         self.administrator = administrator
+        self.participantCloud = participantCloud
         self.policy = policy
         self.inventory = inventory
         self.cloud = cloud
