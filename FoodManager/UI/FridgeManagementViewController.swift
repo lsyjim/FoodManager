@@ -276,10 +276,17 @@ final class FridgeManagementViewController: UITableViewController {
         }
         let ownership = sharing?.ownership(of: fridge.id) ?? .personalOwned
         let isOwner = ownership == .personalOwned || ownership == .sharedOwned
-        if let sharing, ownership == .sharedOwned, let url = sharing.invitationURL(for: fridge.id) {
-            sheet.addAction(UIAlertAction(title: "分享邀請連結", style: .default) { [weak self] _ in
-                self?.presentInvitation(url, fridgeName: fridge.name, at: indexPath)
+        if let sharing, ownership == .sharedOwned {
+            sheet.addAction(UIAlertAction(title: "成員與申請", style: .default) { [weak self] _ in
+                let members = SharedMembersViewController(sharing: sharing, fridgeID: fridge.id, fridgeName: fridge.name)
+                members.onSharingStopped = { [weak self] in self?.reload() }
+                self?.navigationController?.pushViewController(members, animated: true)
             })
+            if let url = sharing.invitationURL(for: fridge.id) {
+                sheet.addAction(UIAlertAction(title: "分享邀請連結", style: .default) { [weak self] _ in
+                    self?.presentInvitation(url, fridgeName: fridge.name, at: indexPath)
+                })
+            }
         } else if let sharing, sharing.canOfferSharing(fridge.id) {
             sheet.addAction(UIAlertAction(title: "共享這台冰箱", style: .default) { [weak self] _ in
                 self?.confirmSharing(fridge, at: indexPath)

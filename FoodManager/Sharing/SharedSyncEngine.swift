@@ -70,6 +70,7 @@ final class SharedSyncEngine: CKSyncEngineDelegate, @unchecked Sendable {
     }
 
     var privateDatabase: CKDatabase { container.privateCloudDatabase }
+    var cloudContainer: CKContainer { container }
 
     func queueSave(_ recordIDs: [CKRecord.ID], scope: SharedDatabaseScope) {
         engines[scope]?.state.add(pendingRecordZoneChanges: recordIDs.map { .saveRecord($0) })

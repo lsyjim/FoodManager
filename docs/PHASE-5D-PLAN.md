@@ -124,3 +124,14 @@
   - 已知限制：
     - 關閉 iCloud 同步時，共享冰箱暫時不顯示；資料仍在 iCloud，重新開啟同步後會回來。
     - 「開始共享冰箱前的資料」保護副本若在共享成功後還原，該冰箱會被隱藏，因為同 ID 的共享版本優先。完整的備份與共享互動在 5D-5 處理。
+- **5D-3**：
+  - 主人在「管理冰箱 → 成員與申請」管理共享：
+    - 加入申請：同意、拒絕、封鎖；被封鎖的人可以解除封鎖。
+    - 成員：可以移除成員，對方的 Inventory 與 Structure 存取權都會一起移除。
+    - 「允許新的加入申請」開關。
+    - 分享邀請連結。
+    - 停止共享：刪除兩個 share，冰箱保留在主人這邊。
+  - 同意加入時：先把對方加進 Structure share（readOnly），再加進 Inventory share（readWrite）；第二步失敗時，會把第一步撤回。
+  - `StructureLink` 紀錄放在 Inventory zone，讓已核准的成員找到 Structure share。只接受 icloud.com 的 https 連結。因為參與者可以寫入 Inventory zone，5D-4 加入 Structure share 前，會再核對 zone 名稱與主人是否一致。
+  - 這些權限都由伺服器的 CKShare 強制執行。畫面只顯示伺服器回傳的狀態，每個動作都等伺服器確認後才顯示完成。
+  - 尚未在真機上用兩個 iCloud 帳號驗證。

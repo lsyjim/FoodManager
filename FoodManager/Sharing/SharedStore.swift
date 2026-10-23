@@ -23,6 +23,8 @@ final class SharedFridgeRecord {
     /// Owner only: the invitation link (inventory share) and the read-only structure share. Never logged.
     var inventoryShareURL: String?
     var structureShareURL: String?
+    /// System fields of this fridge's `StructureLink` record (owner uploads it, members read it).
+    var linkSystemFields: Data?
     var name: String = ""
     var templateID: String = ""
     var layoutData: Data = Data()

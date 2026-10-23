@@ -6,7 +6,8 @@ import Foundation
 // | Zone                      | Records                    | Participant permission |
 // |---------------------------|----------------------------|------------------------|
 // | `Fridge-<id>-Structure`   | SharedFridge, SharedMagnet | read-only              |
-// | `Fridge-<id>-Inventory`   | SharedFood, QuantityOp     | read-write             |
+// | `Fridge-<id>-Inventory`   | SharedFood, QuantityOp,    | read-write             |
+// |                           | StructureLink              |                        |
 //
 // The server enforces the split; this file adds the client half of the boundary: structure is only ever read from
 // the structure zone, inventory only from the inventory zone, and a record's fridge comes from its zone name (never
@@ -45,11 +46,14 @@ enum SharedRecordType {
     static let magnet = "SharedMagnet"
     static let food = "SharedFood"
     static let quantityOp = "QuantityOp"
+    /// The structure share's URL (record name = fridge ID), so an approved member can also join the read-only
+    /// structure share. Participants can write the inventory zone, so the link is validated again before joining.
+    static let structureLink = "StructureLink"
 
     static func zoneKind(of recordType: String) -> SharedZoneKind? {
         switch recordType {
         case fridge, magnet: return .structure
-        case food, quantityOp: return .inventory
+        case food, quantityOp, structureLink: return .inventory
         default: return nil
         }
     }
@@ -106,6 +110,7 @@ enum SharedIncoming: Equatable {
     case magnet(SharedMagnetFields)
     case food(SharedFoodFields)
     case quantityOp(QuantityOp, fridgeID: UUID)
+    case structureLink(fridgeID: UUID, url: URL)
 }
 
 // MARK: - Coding
@@ -147,6 +152,10 @@ enum SharedRecordCoder {
                   QuantityLedger.isValidDelta(delta), let createdAt = record["createdAt"] as? Date,
                   isValidDate(createdAt) else { return nil }
             return .quantityOp(QuantityOp(id: id, foodID: foodID, delta: delta, createdAt: createdAt), fridgeID: fridgeID)
+        case SharedRecordType.structureLink:
+            guard id == fridgeID, let text = record["url"] as? String, let url = URL(string: text),
+                  isValidShareURL(url) else { return nil }
+            return .structureLink(fridgeID: fridgeID, url: url)
         case SharedRecordType.magnet:
             guard let sourceRaw = record["source"] as? String, MagnetSource(rawValue: sourceRaw) != nil,
                   let centerX = record["centerX"] as? Double, let centerY = record["centerY"] as? Double,
@@ -215,6 +224,19 @@ enum SharedRecordCoder {
         record["delta"] = (op.delta as NSDecimalNumber).description(withLocale: posix)
         record["createdAt"] = op.createdAt
         return record
+    }
+
+    static func encodeStructureLink(fridgeID: UUID, url: URL, ownerName: String, systemFields: Data?) -> CKRecord {
+        let record = record(type: SharedRecordType.structureLink, recordName: fridgeID,
+                            zoneID: SharedZone.id(fridgeID: fridgeID, kind: .inventory, ownerName: ownerName), systemFields: systemFields)
+        record["url"] = url.absoluteString
+        return record
+    }
+
+    /// iCloud share links only (https on icloud.com).
+    static func isValidShareURL(_ url: URL) -> Bool {
+        guard url.scheme == "https", let host = url.host?.lowercased() else { return false }
+        return host == "icloud.com" || host.hasSuffix(".icloud.com")
     }
 
     /// `imageFileURL`: the photo written to a file for upload (CKAsset needs one).

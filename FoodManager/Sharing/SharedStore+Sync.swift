@@ -71,6 +71,16 @@ extension SharedStore {
                     row.systemFields = systemFields
                     context.insert(row)
                 }
+            case let .structureLink(fridgeID, url):
+                // A member learns where the read-only structure share is; the owner already knows.
+                let row = try fetchFridge(fridgeID, in: context)
+                    ?? insert(SharedFridgeRecord(id: fridgeID, role: scope.role, zoneOwnerName: record.recordID.zoneID.ownerName), in: context)
+                guard row.role == scope.role else { report.ignored += 1; continue }
+                if scope == .shared {
+                    row.structureShareURL = url.absoluteString
+                    if row.layoutData.isEmpty { row.statusRaw = SharedFridgeStatus.pendingApproval.rawValue }
+                }
+                row.linkSystemFields = systemFields
             case let .magnet(fields):
                 let id = fields.id
                 let row = try context.fetch(FetchDescriptor<SharedMagnetRecord>(predicate: #Predicate { $0.id == id })).first
@@ -96,6 +106,19 @@ extension SharedStore {
 
         var purgedFridges: [UUID] = []
         for (recordID, recordType) in deletions {
+            if recordType == CKRecord.SystemType.share {
+                // Sharing was stopped (seen by the owner's other devices).
+                if scope == .private, let zone = SharedZone.parse(recordID.zoneID), let fridge = try fetchFridge(zone.fridgeID, in: context) {
+                    if zone.kind == .inventory {
+                        fridge.isShared = false
+                        fridge.inventoryShareURL = nil
+                    } else {
+                        fridge.structureShareURL = nil
+                    }
+                    report.deleted += 1
+                }
+                continue
+            }
             guard let zone = SharedZone.parse(recordID.zoneID), SharedRecordType.zoneKind(of: recordType) == zone.kind,
                   let id = UUID(uuidString: recordID.recordName) else {
                 report.ignored += 1
@@ -111,6 +134,8 @@ extension SharedStore {
                 try context.fetch(FetchDescriptor<SharedQuantityOpRecord>(predicate: #Predicate { $0.id == id })).forEach(context.delete)
             case SharedRecordType.magnet:
                 try context.fetch(FetchDescriptor<SharedMagnetRecord>(predicate: #Predicate { $0.id == id })).forEach(context.delete)
+            case SharedRecordType.structureLink:
+                try fetchFridge(id, in: context)?.linkSystemFields = nil
             default:
                 report.ignored += 1
                 continue
@@ -172,6 +197,11 @@ extension SharedStore {
             return SharedRecordCoder.encode(fields, ownerName: ownerName, imageFileURL: magnet.imageData.flatMap { imageFileURL(magnet.id, $0) },
                                             systemFields: magnet.systemFields)
         case .inventory:
+            if id == fridge.id {
+                guard scope == .private, let text = fridge.structureShareURL, let url = URL(string: text) else { return nil }
+                return SharedRecordCoder.encodeStructureLink(fridgeID: fridge.id, url: url, ownerName: ownerName,
+                                                             systemFields: fridge.linkSystemFields)
+            }
             if let food = try context.fetch(FetchDescriptor<SharedFoodRecord>(predicate: #Predicate { $0.id == id })).first,
                food.fridgeID == fridge.id {
                 let fields = SharedFoodFields(id: food.id, fridgeID: food.fridgeID, compartmentID: food.compartmentID, name: food.name,
@@ -197,6 +227,8 @@ extension SharedStore {
         switch record.recordType {
         case SharedRecordType.fridge:
             try fetchFridge(id, in: context)?.systemFields = fields
+        case SharedRecordType.structureLink:
+            try fetchFridge(id, in: context)?.linkSystemFields = fields
         case SharedRecordType.food:
             try context.fetch(FetchDescriptor<SharedFoodRecord>(predicate: #Predicate { $0.id == id })).first?.systemFields = fields
         case SharedRecordType.quantityOp:
@@ -213,7 +245,9 @@ extension SharedStore {
     func clearSystemFields(recordID: CKRecord.ID) throws {
         guard let id = UUID(uuidString: recordID.recordName) else { return }
         let context = makeContext()
-        try fetchFridge(id, in: context)?.systemFields = nil
+        if let fridge = try fetchFridge(id, in: context) {
+            if SharedZone.parse(recordID.zoneID)?.kind == .inventory { fridge.linkSystemFields = nil } else { fridge.systemFields = nil }
+        }
         try context.fetch(FetchDescriptor<SharedFoodRecord>(predicate: #Predicate { $0.id == id })).first?.systemFields = nil
         try context.fetch(FetchDescriptor<SharedQuantityOpRecord>(predicate: #Predicate { $0.id == id })).first?.systemFields = nil
         try context.fetch(FetchDescriptor<SharedMagnetRecord>(predicate: #Predicate { $0.id == id })).first?.systemFields = nil

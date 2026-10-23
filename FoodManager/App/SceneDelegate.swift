@@ -184,7 +184,12 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         return SharingService(policy: policy, inventory: inventory, cloud: CloudKitSharingCloud(engine: engine),
                               personal: SwiftDataFridgeStore(container: container),
                               hasPremium: { [weak self] in self?.monetization.entitlementObserver?.isPremium ?? false },
-                              snapshots: .shared)
+                              snapshots: .shared, administrator: Self.makeAdministrator(engine))
+    }
+
+    private static func makeAdministrator(_ engine: SharedSyncEngine) -> ShareAdministering? {
+        guard #available(iOS 26.0, *) else { return nil }
+        return CloudKitShareAdministrator(container: engine.cloudContainer)
     }
 
     /// Shared-fridge changes arrived: rebuild like after an iCloud import, at a calm moment only.

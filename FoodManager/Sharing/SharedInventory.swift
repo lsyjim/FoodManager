@@ -131,6 +131,19 @@ final class SharedInventory {
         row.inventoryShareURL = invitationURL?.absoluteString
         row.structureShareURL = structureURL?.absoluteString
         try context.save()
+        // Approved members find the structure share through this record.
+        if structureURL != nil { report(saves: [inventoryID(row.id, row)], scope: .private) }
+    }
+
+    /// Owner: both shares were deleted. The fridge stays with the owner (still in the private custom zones).
+    func markUnshared(_ fridgeID: UUID) throws {
+        let context = store.makeContext()
+        let row = try ownedRow(fridgeID, in: context)
+        row.isShared = false
+        row.inventoryShareURL = nil
+        row.structureShareURL = nil
+        try context.save()
+        report(deletes: [inventoryID(row.id, row)], scope: .private)
     }
 
     // MARK: Food
