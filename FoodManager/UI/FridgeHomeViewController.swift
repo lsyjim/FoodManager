@@ -18,6 +18,8 @@ final class FridgeHomeViewController: UIViewController {
     private let sharing: SharingService?
     /// Whether this home screen (and so a shared fridge, if it is one) is on screen.
     var onVisibilityChange: ((_ visible: Bool, _ isSharedFridge: Bool) -> Void)?
+    /// Manual iCloud backups (Phase 5E; nil in temporary sessions).
+    var icloudBackup: ICloudBackupService?
     private let magnetLibrary: MagnetLibrary
     /// Magnets on the closed door: display only, so taps still open the fridge.
     private lazy var magnetBoard = MagnetBoardView(template: template, library: magnetLibrary)
@@ -179,6 +181,7 @@ final class FridgeHomeViewController: UIViewController {
 
     func openMagnetEditor() {
         guard !isEditingLayout, presentedViewController == nil else { return }
+        guard !isParticipantFridge else { return showOwnerOnly("裝飾冰箱") }
         let magnets: [FridgeMagnet]
         do {
             magnets = try magnetLibrary.magnets(fridgeID: fridge.id)
@@ -309,6 +312,14 @@ final class FridgeHomeViewController: UIViewController {
         if isSharedFridge { _ = inventory.reload() }
         notifications.scheduleUpdate()
         publishWidgetSnapshot()
+    }
+
+    /// Someone else's shared fridge: its name, compartments and magnets are read-only here (and on the server).
+    private var isParticipantFridge: Bool { sharing?.ownership(of: fridge.id) == .sharedParticipant }
+
+    /// Said right away when a member taps an owner-only action, instead of failing at "save".
+    private func showOwnerOnly(_ action: String) {
+        showAlert(title: "只有冰箱主人可以\(action)", message: "這是別人共享給你的冰箱。你可以新增、編輯和取用食材；冰箱名稱、隔層與磁鐵由冰箱主人管理。")
     }
 
     private var isSharedFridge: Bool {
@@ -703,6 +714,7 @@ final class FridgeHomeViewController: UIViewController {
     // MARK: - Editing
 
     private func beginEditing() {
+        guard !isParticipantFridge else { return showOwnerOnly("編輯隔層") }
         foodListSheet?.dismiss(animated: true)
         // Occupancy comes from real food records, so compartments holding food can't be deleted.
         editor = FridgeLayoutEditor(fridge: fridge, occupancy: inventory)
@@ -920,13 +932,21 @@ final class FridgeHomeViewController: UIViewController {
     func openSettings() {
         guard !isEditingLayout else { return }
         let backup = BackupFlow(service: makeBackupService(),
-                                syncsToCloud: { CloudSyncSettings.shared.isEnabled && CloudSyncMonitor.shared.isCloudActive }) { [weak self] failure in
+                                syncsToCloud: { false }) { [weak self] failure in
             self?.onDataRestored?(failure)
         }
         let settings = SettingsViewController(entitlements: entitlements, ads: ads, notifications: notifications,
                                               makeFridgeManagement: { [weak self] in self?.makeFridgeManagement() },
-                                              backup: backup)
+                                              backup: backup, icloudBackup: icloudBackup)
         navigationController?.pushViewController(settings, animated: true)
+    }
+
+    /// First launch of a new installation with backups in iCloud: the version list, restoring only after confirmation.
+    func presentICloudRestore() {
+        guard let icloudBackup else { return }
+        let backup = BackupFlow(service: makeBackupService()) { [weak self] failure in self?.onDataRestored?(failure) }
+        let versions = ICloudBackupVersionsViewController(service: icloudBackup, backup: backup, restoring: true)
+        navigationController?.pushViewController(versions, animated: true)
     }
 
     @objc private func monetizationChanged() {

@@ -34,7 +34,7 @@ extension FridgeStore {
 }
 
 final class SwiftDataFridgeStore: FridgeStore {
-    private let container: ModelContainer
+    let container: ModelContainer
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "FridgeStore")
 
     init(container: ModelContainer) {
@@ -44,19 +44,18 @@ final class SwiftDataFridgeStore: FridgeStore {
     static let schema = Schema([FridgeRecord.self, FoodItemRecord.self, MagnetRecord.self, MagnetImageRecord.self])
 
     /// `url == nil && inMemory == false` uses the default app-support store (in the App Group container).
-    /// `cloudKit` mirrors the store to the user's private CloudKit database. It is never on implicitly: with the
-    /// iCloud entitlement present SwiftData would otherwise sync any store automatically (tests included).
-    static func makeContainer(inMemory: Bool = false, url: URL? = nil, cloudKit: Bool = false) throws -> ModelContainer {
+    /// Always local: `cloudKitDatabase: .none` is explicit, because with the iCloud entitlement present SwiftData would
+    /// otherwise mirror the store to CloudKit on its own. Personal data reaches iCloud only through a manual backup.
+    static func makeContainer(inMemory: Bool = false, url: URL? = nil) throws -> ModelContainer {
         // Schema history (all migrations are lightweight and keep every row):
         // - Phase 2 adds FoodItemRecord, Phase 4.3 adds MagnetRecord (new entities).
-        // - Phase 4.4 removes the unique constraints (CloudKit can't enforce them), adds attribute defaults and
-        //   adds MagnetImageRecord (photo bytes, synced as CKAssets).
-        let database: ModelConfiguration.CloudKitDatabase = cloudKit ? .private(CloudSyncConstants.containerIdentifier) : .none
+        // - Phase 4.4 removes the unique constraints, adds attribute defaults and adds MagnetImageRecord.
+        // - Phase 5E stops CloudKit mirroring; stores mirrored before open unchanged without it.
         let configuration: ModelConfiguration
         if let url {
-            configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: database)
+            configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
         } else {
-            configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: inMemory, cloudKitDatabase: database)
+            configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: inMemory, cloudKitDatabase: .none)
         }
         return try ModelContainer(for: schema, configurations: [configuration])
     }

@@ -79,12 +79,12 @@ final class ReleaseFlowUITests: XCTestCase {
 
     func testDataManagementEntriesAndNoPaidEntryPoints() throws {
         element("home.settings").tap()
-        XCTAssertTrue(element("settings.cloudSync").waitForExistence(timeout: 3))
-        XCTAssertTrue(element("settings.exportBackup").exists)
+        XCTAssertTrue(element("settings.exportBackup").waitForExistence(timeout: 3))
         XCTAssertTrue(element("settings.importBackup").exists)
         XCTAssertFalse(element("settings.upgrade").exists, "no purchase UI in 1.0")
         XCTAssertFalse(element("settings.restore").exists)
-        element("settings.cloudSync").tap()
-        XCTAssertTrue(element("cloudSync.toggle").waitForExistence(timeout: 3))
+        // Phase 5E: no automatic iCloud sync switch anywhere (temporary UI-test data never offers iCloud backups).
+        XCTAssertFalse(element("settings.cloudSync").exists)
+        XCTAssertFalse(app.staticTexts["iCloud 自動同步"].exists)
     }
 }

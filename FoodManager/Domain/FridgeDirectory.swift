@@ -19,6 +19,8 @@ enum FridgeDirectoryError: Error, Equatable {
     case notFound
     case lastFridge
     case hasActiveFood(Int)
+    /// Only fridges shared by others would remain.
+    case noOwnFridgeLeft
 
     var message: String {
         switch self {
@@ -26,6 +28,7 @@ enum FridgeDirectoryError: Error, Equatable {
         case .invalidName: return "請輸入冰箱名稱（最多 \(FridgePolicy.maxNameLength) 字）"
         case .notFound: return "找不到這台冰箱"
         case .lastFridge: return "至少要保留一台冰箱"
+        case .noOwnFridgeLeft: return "至少要保留一台自己的冰箱。"
         case let .hasActiveFood(count): return "這台冰箱還有 \(count) 項食材，請先移到另一台冰箱或標記為已食用。"
         }
     }
@@ -79,6 +82,8 @@ final class FridgeDirectory {
     var fridges: [Fridge] { results.map(\.fridge) }
     /// Slots held by shared fridges that aren't usable yet (access requests waiting for approval, joins in progress).
     var reservedSlots: () -> Int = { 0 }
+    /// Which fridges may receive a deleted fridge's history, best first (nil: not allowed).
+    var historyPriority: (UUID) -> Int? = { _ in 0 }
     var canAddFridge: Bool { results.count + reservedSlots() < FridgePolicy.maxRefrigerators }
 
     /// The stored selection if it still exists, otherwise the oldest fridge.
@@ -138,7 +143,11 @@ final class FridgeDirectory {
 
     func deletionSummary(for id: UUID) throws -> FridgeDeletionSummary {
         guard contains(id) else { throw FridgeDirectoryError.notFound }
-        guard let remaining = fridges.first(where: { $0.id != id }) else { throw FridgeDirectoryError.lastFridge }
+        guard fridges.contains(where: { $0.id != id }) else { throw FridgeDirectoryError.lastFridge }
+        // The user's own fridges first; never someone else's shared fridge (see `historyPriority`).
+        guard let remaining = fridges.filter({ $0.id != id })
+            .compactMap({ fridge in historyPriority(fridge.id).map { (fridge, $0) } })
+            .min(by: { $0.1 < $1.1 })?.0 else { throw FridgeDirectoryError.noOwnFridgeLeft }
         return FridgeDeletionSummary(activeFoodCount: try foodStore.activeItems(fridgeID: id).count,
                                      historyCount: try foodStore.consumedItems(fridgeID: id).count,
                                      remainingFridge: remaining)

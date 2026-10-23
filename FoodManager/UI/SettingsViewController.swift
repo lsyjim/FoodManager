@@ -6,7 +6,7 @@ final class SettingsViewController: UITableViewController {
     private enum Row: Equatable {
         case upgrade, restore, premiumUnlocked, adFree
         case notifications, fridges
-        case cloudSync, exportBackup, importBackup
+        case icloudBackup, exportBackup, importBackup
         case privacyOptions, watchAd, rateApp
         #if DEBUG
         case devPremium, devAds, devResetConsent, devAdStatus
@@ -24,13 +24,16 @@ final class SettingsViewController: UITableViewController {
     private let notifications: NotificationCoordinator
     private let makeFridgeManagement: (() -> UIViewController?)?
     private let backup: BackupFlow?
+    /// Manual iCloud backups (nil for temporary in-memory sessions).
+    private let icloudBackup: ICloudBackupService?
     private var sections: [Section] = []
 
     /// `entitlements` / `ads` are nil while monetization is suspended (`MonetizationPolicy`): every paid
     /// entry point (完整版, 恢復購買, 廣告與隱私, developer purchase switches) is then hidden.
     init(entitlements: EntitlementService?, ads: AdsCoordinator?, notifications: NotificationCoordinator,
-         makeFridgeManagement: (() -> UIViewController?)? = nil, backup: BackupFlow? = nil) {
+         makeFridgeManagement: (() -> UIViewController?)? = nil, backup: BackupFlow? = nil, icloudBackup: ICloudBackupService? = nil) {
         self.makeFridgeManagement = makeFridgeManagement
+        self.icloudBackup = icloudBackup
         self.backup = backup
         self.entitlements = entitlements
         self.ads = ads
@@ -46,7 +49,7 @@ final class SettingsViewController: UITableViewController {
         title = "設定"
         view.accessibilityIdentifier = "settings"
         tableView.backgroundColor = Theme.Color.background
-        for name in [Notification.Name.entitlementsDidChange, .adAvailabilityDidChange, .cloudSyncStatusDidChange] {
+        for name in [Notification.Name.entitlementsDidChange, .adAvailabilityDidChange] {
             NotificationCenter.default.addObserver(self, selector: #selector(rebuild), name: name, object: nil)
         }
         rebuild()
@@ -55,6 +58,7 @@ final class SettingsViewController: UITableViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setNavigationBarHidden(false, animated: animated)
+        tableView.reloadData() // the latest iCloud backup date may have changed
     }
 
     @objc private func rebuild() {
@@ -69,9 +73,14 @@ final class SettingsViewController: UITableViewController {
         }
         sections.append(Section(title: "一般", footer: nil, rows: makeFridgeManagement == nil ? [.notifications] : [.fridges, .notifications]))
         if backup != nil {
-            sections.append(Section(title: "資料管理",
-                                    footer: "iCloud 自動同步會在你自己的裝置之間同步資料。匯出的備份檔是一般可讀的 JSON 文字檔（含磁鐵照片），沒有加密，只會存到你選擇的位置（例如「檔案」或 iCloud 雲碟），也可以分享給使用不同 Apple 帳號的人匯入。匯入備份會取代目前所有資料。",
-                                    rows: [.cloudSync, .exportBackup, .importBackup]))
+            if icloudBackup != nil {
+                sections.append(Section(title: "iCloud 備份",
+                                        footer: "資料只存在這台裝置。需要時手動備份到你自己的 iCloud，換手機或重新安裝後再手動還原；不會自動同步。",
+                                        rows: [.icloudBackup]))
+            }
+            sections.append(Section(title: "手動檔案備份",
+                                    footer: "匯出的備份檔是一般可讀的 JSON 文字檔（含磁鐵照片），沒有加密，只會存到你選擇的位置（例如「檔案」或 iCloud 雲碟），也可以分享給使用不同 Apple 帳號的人匯入。匯入備份會取代目前的個人資料，不會自動上傳到 iCloud。",
+                                    rows: [.exportBackup, .importBackup]))
         }
         if let ads, ads.eligibility.entitlement != .premium {
             // The privacy-options entry must stay reachable whenever UMP requires it (independent of purchases).
@@ -129,12 +138,12 @@ final class SettingsViewController: UITableViewController {
             content.text = "通知設定"
             content.image = UIImage(systemName: "bell")
             cell.accessoryType = .disclosureIndicator
-        case .cloudSync:
-            content.text = "iCloud 自動同步"
-            content.secondaryText = CloudSyncMonitor.shared.status(enabled: CloudSyncSettings.shared.isEnabled).title
+        case .icloudBackup:
+            content.text = "iCloud 備份"
+            content.secondaryText = icloudBackup?.lastVerifiedBackup.map { $0.formatted(.dateTime.month().day()) } ?? "尚未備份"
             content.image = UIImage(systemName: "icloud")
             cell.accessoryType = .disclosureIndicator
-            cell.accessibilityIdentifier = "settings.cloudSync"
+            cell.accessibilityIdentifier = "settings.icloudBackup"
         case .exportBackup:
             content.text = "匯出備份"
             content.image = UIImage(systemName: "square.and.arrow.up")
@@ -216,8 +225,9 @@ final class SettingsViewController: UITableViewController {
             if let management = makeFridgeManagement?() { navigationController?.pushViewController(management, animated: true) }
         case .notifications:
             navigationController?.pushViewController(NotificationSettingsViewController(coordinator: notifications), animated: true)
-        case .cloudSync:
-            navigationController?.pushViewController(CloudSyncViewController(backup: backup), animated: true)
+        case .icloudBackup:
+            guard let icloudBackup, let backup else { return }
+            navigationController?.pushViewController(ICloudBackupViewController(service: icloudBackup, backup: backup), animated: true)
         case .exportBackup:
             backup?.export(from: self, sourceView: tableView.cellForRow(at: indexPath))
         case .importBackup:

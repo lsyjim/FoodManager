@@ -625,15 +625,24 @@ final class BackupTests: XCTestCase {
     func testSettingsShowsDataManagementSection() {
         let coordinator = NotificationCoordinator(client: FakeNotificationClient(), preferencesStore: InMemoryPreferencesStore(), snapshot: { nil })
         let settings = SettingsViewController(entitlements: nil, ads: nil, notifications: coordinator,
-                                              backup: BackupFlow(service: service) { _ in })
+                                              backup: BackupFlow(service: service) { _ in },
+                                              icloudBackup: ICloudBackupService(store: LocalOnlyBackupTests.FakeBackupStore(),
+                                                                                defaults: UserDefaults(suiteName: "settings-\(UUID().uuidString)")!))
         settings.loadViewIfNeeded()
         let titles = (0..<settings.numberOfSections(in: settings.tableView)).map { settings.tableView(settings.tableView, titleForHeaderInSection: $0) }
-        XCTAssertTrue(titles.contains("資料管理"))
-        let section = titles.firstIndex(of: "資料管理")!
-        XCTAssertTrue(settings.tableView(settings.tableView, titleForFooterInSection: section)?.contains("沒有加密") == true)
-        let labels = (0..<settings.tableView(settings.tableView, numberOfRowsInSection: section)).compactMap {
-            (settings.tableView(settings.tableView, cellForRowAt: IndexPath(row: $0, section: section)).contentConfiguration as? UIListContentConfiguration)?.text
+        func labels(_ title: String) -> [String] {
+            guard let section = titles.firstIndex(of: title) else { return [] }
+            return (0..<settings.tableView(settings.tableView, numberOfRowsInSection: section)).compactMap {
+                (settings.tableView(settings.tableView, cellForRowAt: IndexPath(row: $0, section: section)).contentConfiguration as? UIListContentConfiguration)?.text
+            }
         }
-        XCTAssertEqual(labels, ["iCloud 自動同步", "匯出備份", "匯入備份"], "manual backup stays next to iCloud sync")
+        XCTAssertEqual(labels("iCloud 備份"), ["iCloud 備份"])
+        XCTAssertEqual(labels("手動檔案備份"), ["匯出備份", "匯入備份"], "manual file backup stays available")
+        let fileSection = titles.firstIndex(of: "手動檔案備份")
+        XCTAssertTrue(fileSection.flatMap { settings.tableView(settings.tableView, titleForFooterInSection: $0) }?.contains("沒有加密") == true)
+        let all = titles.indices.flatMap { section in (0..<settings.tableView(settings.tableView, numberOfRowsInSection: section)).compactMap {
+            (settings.tableView(settings.tableView, cellForRowAt: IndexPath(row: $0, section: section)).contentConfiguration as? UIListContentConfiguration)?.text
+        } }
+        XCTAssertFalse(all.contains { $0.contains("自動同步") }, "no automatic sync label anywhere")
     }
 }

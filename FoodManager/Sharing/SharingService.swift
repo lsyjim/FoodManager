@@ -17,7 +17,7 @@ enum SharingServiceError: Error, Equatable {
         case .notAllowed(.requiresPremium): return "共享冰箱需要進階版。"
         case .notAllowed(.unsupportedSystem): return "共享冰箱需要 iOS 26 或更新版本。"
         case .notAllowed: return "目前無法使用共享冰箱。"
-        case .syncUnavailable: return "請先登入 iCloud 並開啟「iCloud 自動同步」，才能共享冰箱。"
+        case .syncUnavailable: return "請先在「設定」App 登入 iCloud，才能共享冰箱。"
         case .fridgeNotFound: return "找不到這台冰箱。"
         case .uploadIncomplete: return "上傳到 iCloud 沒有全部完成，冰箱沒有變更，請稍後再試。"
         case .shareFailed: return "無法建立 iCloud 共享，冰箱沒有變更，請稍後再試。"
@@ -196,6 +196,7 @@ final class CloudKitSharingCloud: SharingCloud {
 
     init(engine: SharedSyncEngine) { self.engine = engine }
 
+    /// The engine runs; a missing iCloud account surfaces as a CloudKit error at upload (with its code).
     var isReady: Bool { engine.isRunning }
 
     func upload(fridgeID: UUID, records: [CKRecord.ID]) async throws {

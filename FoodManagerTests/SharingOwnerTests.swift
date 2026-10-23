@@ -6,6 +6,7 @@ import XCTest
 /// Phase 5D-2: turning a personal fridge into a shared one, routing between the personal and shared stores, and
 /// owner-only structure. CloudKit is replaced by a fake that "confirms" uploads the way the sync engine does; real
 /// sharing still needs two devices with different iCloud accounts.
+@MainActor
 final class SharingOwnerTests: XCTestCase {
     private final class FakeCloud: SharingCloud {
         var isReady = true
@@ -270,8 +271,91 @@ final class SharingOwnerTests: XCTestCase {
         XCTAssertEqual(try routing.loadAll().first?.fridge.name, "全家的冰箱")
         XCTAssertEqual(changes().last?.saves.first?.zoneID, SharedZone.id(fridgeID: fridge.id, kind: .structure))
         XCTAssertThrowsError(try routing.deleteFridge(fridge.id, moveHistoryTo: UUID())) {
-            XCTAssertEqual($0 as? SharingRoutingError, .sharedFridgeLocked)
+            XCTAssertEqual($0 as? SharingRoutingError, .stopSharingFirst)
         }
+    }
+
+    // MARK: Deleting fridges with shared ones around
+
+    private func consume(_ item: FoodItem, in store: FoodStore) throws {
+        var eaten = item
+        eaten.consumedAt = .now
+        try store.upsert(eaten)
+    }
+
+    func testPersonalFridgeCanBeDeletedWhenOnlyASharedOneRemains() async throws {
+        let (fixture, _) = try makeFixture()
+        let shared = fixture.session.loadResult.fridge
+        _ = try await fixture.service.share(fridgeID: shared.id, backups: backups(fixture.session))
+        let session = try AppBootstrap.makeSession(container: fixture.container, mode: .inMemoryForTesting,
+                                                   selection: InMemoryFridgeSelectionStore(), sharing: fixture.service).get()
+        let pantry = try session.directory.create(name: "儲藏室", copyingLayoutFrom: nil)
+        let jam = try addFood("果醬", quantity: 1, to: pantry, store: session.foodStore)
+        try consume(jam, in: session.foodStore)
+
+        let summary = try session.directory.deletionSummary(for: pantry.id)
+        XCTAssertEqual(summary.remainingFridge.id, shared.id)
+        try session.directory.delete(pantry.id)
+        XCTAssertEqual(session.directory.fridges.map(\.id), [shared.id])
+        XCTAssertEqual(try session.foodStore.consumedItems(fridgeID: shared.id).map(\.id), [jam.id], "history kept")
+        XCTAssertTrue(try fixture.personal.loadExisting().isEmpty)
+    }
+
+    func testHistoryPrefersThePersonalFridge() async throws {
+        let (fixture, _) = try makeFixture()
+        let shared = fixture.session.loadResult.fridge
+        _ = try await fixture.service.share(fridgeID: shared.id, backups: backups(fixture.session))
+        let session = try AppBootstrap.makeSession(container: fixture.container, mode: .inMemoryForTesting,
+                                                   selection: InMemoryFridgeSelectionStore(), sharing: fixture.service).get()
+        // Make room: the limit is 2, so swap through a personal fridge.
+        let pantry = try session.directory.create(name: "儲藏室", copyingLayoutFrom: nil)
+        XCTAssertEqual(session.directory.historyPriority(pantry.id), 0)
+        XCTAssertEqual(session.directory.historyPriority(shared.id), 2)
+    }
+
+    func testSharedFridgesCantBeDeletedDirectly() async throws {
+        let (fixture, _) = try makeFixture()
+        let fridge = fixture.session.loadResult.fridge
+        _ = try await fixture.service.share(fridgeID: fridge.id, backups: backups(fixture.session))
+        let session = try AppBootstrap.makeSession(container: fixture.container, mode: .inMemoryForTesting,
+                                                   selection: InMemoryFridgeSelectionStore(), sharing: fixture.service).get()
+        let pantry = try session.directory.create(name: "儲藏室", copyingLayoutFrom: nil)
+        XCTAssertThrowsError(try session.directory.delete(fridge.id)) { XCTAssertEqual($0 as? SharingRoutingError, .stopSharingFirst) }
+        XCTAssertEqual(session.directory.fridges.count, 2)
+        _ = pantry
+    }
+
+    func testFridgeThatStoppedSharingCanBeDeleted() async throws {
+        let (fixture, changes) = try makeFixture()
+        let fridge = fixture.session.loadResult.fridge
+        let milk = try addFood("牛奶", quantity: 1, to: fridge, store: fixture.session.foodStore)
+        try consume(milk, in: fixture.session.foodStore)
+        _ = try await fixture.service.share(fridgeID: fridge.id, backups: backups(fixture.session))
+        try fixture.inventory.markUnshared(fridge.id)
+        let session = try AppBootstrap.makeSession(container: fixture.container, mode: .inMemoryForTesting,
+                                                   selection: InMemoryFridgeSelectionStore(), sharing: fixture.service).get()
+        let pantry = try session.directory.create(name: "儲藏室", copyingLayoutFrom: nil)
+
+        try session.directory.delete(fridge.id)
+        XCTAssertEqual(session.directory.fridges.map(\.id), [pantry.id])
+        XCTAssertFalse(fixture.inventory.contains(fridge.id))
+        XCTAssertEqual(changes().last?.deletedFridgeZones, [fridge.id], "its zones are removed from iCloud")
+        XCTAssertEqual(try session.foodStore.consumedItems(fridgeID: pantry.id).map(\.id), [milk.id], "history moved to the personal fridge")
+    }
+
+    func testJoinedFridgesAreLeftNotDeletedAndNeverReceiveHistory() throws {
+        let (fixture, _) = try makeFixture()
+        let theirs = FridgeFactory.makeDefault(name: "朋友的")
+        try fixture.inventory.store.apply(modifications: [
+            SharedRecordCoder.encode(SharedFridgeFields(id: theirs.id, name: theirs.name, templateID: theirs.templateID,
+                                                        layoutData: try StoredLayout.encode(theirs), createdAt: .now, updatedAt: .now),
+                                     ownerName: "_friend", systemFields: nil)], deletions: [], scope: .shared)
+        let session = try AppBootstrap.makeSession(container: fixture.container, mode: .inMemoryForTesting,
+                                                   selection: InMemoryFridgeSelectionStore(), sharing: fixture.service).get()
+        let mine = fixture.session.loadResult.fridge
+        XCTAssertThrowsError(try session.directory.delete(theirs.id)) { XCTAssertEqual($0 as? SharingRoutingError, .leaveInstead) }
+        XCTAssertThrowsError(try session.directory.delete(mine.id)) { XCTAssertEqual($0 as? FridgeDirectoryError, .noOwnFridgeLeft) }
+        XCTAssertEqual(session.directory.fridges.count, 2, "nothing deleted")
     }
 
     func testFoodMovesBetweenPersonalAndSharedFridge() async throws {

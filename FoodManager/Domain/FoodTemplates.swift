@@ -160,7 +160,6 @@ final class UserDefaultsFavoriteFoodStore: FavoriteFoodStore {
 
     func save(_ favorites: FavoriteFoods) {
         defaults.set(try? JSONEncoder().encode(favorites.templates), forKey: Self.key)
-        PreferenceCloudSync.noteLocalChange(key: Self.key, defaults: defaults)
     }
 }
 

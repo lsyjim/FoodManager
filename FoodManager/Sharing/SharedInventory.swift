@@ -12,6 +12,8 @@ final class SharedInventory {
         var saves: [CKRecord.ID] = []
         var deletes: [CKRecord.ID] = []
         var scope: SharedDatabaseScope
+        /// Owner: fridges whose two zones are deleted on the server (the fridge itself was deleted).
+        var deletedFridgeZones: [UUID] = []
     }
 
     let store: SharedStore
@@ -143,6 +145,15 @@ final class SharedInventory {
         try context.save()
         // Approved members find the structure share through this record.
         if structureURL != nil { report(saves: [inventoryID(row.id, row)], scope: .private) }
+    }
+
+    /// Owner: deletes a fridge that is no longer shared (its history was already moved elsewhere). Its zones are
+    /// removed from iCloud, which removes it from the owner's other devices too.
+    func removeOwnedFridge(_ fridgeID: UUID) throws {
+        let row = try ownedRow(fridgeID, in: store.makeContext())
+        guard !row.isShared else { throw SharingRoutingError.stopSharingFirst }
+        try store.purgeFridge(fridgeID, keepPlaceholder: false)
+        onLocalChange?(Change(scope: .private, deletedFridgeZones: [fridgeID]))
     }
 
     /// Owner: both shares were deleted. The fridge stays with the owner (still in the private custom zones).

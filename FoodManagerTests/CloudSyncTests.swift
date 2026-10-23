@@ -4,14 +4,6 @@ import UIKit
 import XCTest
 @testable import FoodManager
 
-final class FakeKeyValueStore: KeyValueCloudStore {
-    var values: [String: Any] = [:]
-    var syncCount = 0
-    func object(forKey key: String) -> Any? { values[key] }
-    func set(_ value: Any?, forKey key: String) { values[key] = value }
-    func synchronize() -> Bool { syncCount += 1; return true }
-}
-
 struct FakeAccountProvider: CloudAccountProvider {
     var state: CloudAccountState
     var fingerprint: String?
@@ -61,8 +53,6 @@ final class CloudSyncTests: XCTestCase {
     private func expectedBackup() throws -> FoodManagerBackup {
         try BackupCoding.decoder().decode(FoodManagerBackup.self, from: Data(contentsOf: fixture("precloud-4.3-expected", "json")))
     }
-
-    private func settings() -> CloudSyncSettings { CloudSyncSettings(defaults: defaults) }
 
     /// The fixture was exported with the first fridge selected and no favorites.
     private func prefs() -> PreferencesBackupStore {
@@ -122,71 +112,6 @@ final class CloudSyncTests: XCTestCase {
     }
 
     // MARK: 1, 25 — migration preparation and interrupted migration
-
-    func testPreSyncPreparationProtectsTheRealPreCloudStore() throws {
-        let (store, images) = try preCloudStoreCopy()
-        let originalBytes = try Data(contentsOf: store)
-        XCTAssertFalse(uniqueIndexes(in: store).isEmpty, "the Phase 4.3 store has unique indexes")
-        let snapshots = ProtectionSnapshots(directory: work.appendingPathComponent("Protection"))
-        let settings = settings()
-        let outcome = CloudSyncPreparation.prepareIfNeeded(storeURL: store, settings: settings, snapshots: snapshots,
-                                                           magnetImageDirectory: images,
-                                                           preferences: prefs())
-        XCTAssertEqual(outcome, .ready)
-        XCTAssertTrue(settings.isPreparedForCloud)
-        // 1. Raw copy of the untouched store.
-        let rawCopy = snapshots.directory.appendingPathComponent("PreCloud-Store/default.store")
-        XCTAssertEqual(try Data(contentsOf: rawCopy), originalBytes, "byte-identical pre-migration copy")
-        // 2. Verified JSON backup with exactly the pre-cloud content.
-        let snapshot = try BackupValidator.decode(Data(contentsOf: snapshots.url(for: .preCloud)))
-        XCTAssertTrue(BackupService.canonical(snapshot).hasSameContent(as: BackupService.canonical(try expectedBackup())))
-        // 3. The upgraded store has no unique constraints and the photo has a synced record.
-        XCTAssertTrue(uniqueIndexes(in: store).isEmpty, "unique indexes removed by the lightweight migration")
-        let container = try SwiftDataFridgeStore.makeContainer(url: store)
-        XCTAssertEqual(try SwiftDataMagnetStore(container: container).storedImageIDs().count, 1)
-        // A second copy of a record (as CloudKit may deliver) can be stored after the upgrade.
-        let fridge = try SwiftDataFridgeStore(container: container).loadAll()[0].fridge
-        try deliver([fridge], into: container)
-        XCTAssertEqual(try SwiftDataFridgeStore(container: container).loadAll().count, 2, "shown once per ID")
-        // Running again does nothing.
-        XCTAssertEqual(CloudSyncPreparation.prepareIfNeeded(storeURL: store, settings: settings, snapshots: snapshots,
-                                                            magnetImageDirectory: images), .ready)
-    }
-
-    func testInterruptedPreparationDeletesNothingAndKeepsSyncOff() throws {
-        let (store, images) = try preCloudStoreCopy()
-        let before = try Data(contentsOf: store)
-        struct Interrupted: Error {}
-        let snapshots = ProtectionSnapshots(directory: work.appendingPathComponent("Protection"))
-        let settings = settings()
-        let outcome = CloudSyncPreparation.prepareIfNeeded(storeURL: store, settings: settings, snapshots: snapshots,
-                                                           magnetImageDirectory: images, openLocal: { _ in throw Interrupted() })
-        guard case .failed = outcome else { return XCTFail("\(outcome)") }
-        XCTAssertFalse(settings.isPreparedForCloud, "sync stays off until preparation succeeds")
-        XCTAssertEqual(try Data(contentsOf: store), before, "store untouched")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshots.directory.appendingPathComponent("PreCloud-Store/default.store").path))
-        // The next attempt succeeds and everything is still there.
-        XCTAssertEqual(CloudSyncPreparation.prepareIfNeeded(storeURL: store, settings: settings, snapshots: snapshots,
-                                                            magnetImageDirectory: images, preferences: prefs()), .ready)
-        let container = try SwiftDataFridgeStore.makeContainer(url: store)
-        XCTAssertTrue(BackupService.canonical(try backupService(container, images: MagnetImageStore(directory: images)).makeBackup())
-            .hasSameContent(as: BackupService.canonical(try expectedBackup())))
-    }
-
-    func testFreshInstallNeedsNoPreparationAndFailedSnapshotKeepsThePreviousOne() throws {
-        let settings = settings()
-        let snapshots = ProtectionSnapshots(directory: work.appendingPathComponent("Protection"))
-        XCTAssertEqual(CloudSyncPreparation.prepareIfNeeded(storeURL: work.appendingPathComponent("none.store"), settings: settings,
-                                                            snapshots: snapshots, magnetImageDirectory: work), .ready)
-        let container = try SwiftDataFridgeStore.makeContainer(inMemory: true)
-        _ = try SwiftDataFridgeStore(container: container).loadAll()
-        let good = try backupService(container).makeBackup()
-        try snapshots.write(good, kind: .local)
-        var broken = good
-        broken.fridges = [] // invalid → verification fails → previous file kept
-        XCTAssertThrowsError(try snapshots.write(broken, kind: .local))
-        XCTAssertEqual(try BackupValidator.decode(Data(contentsOf: snapshots.url(for: .local))).fridges.count, 1)
-    }
 
     // MARK: 2, 3, 4 — preservation
 
@@ -310,10 +235,6 @@ final class CloudSyncTests: XCTestCase {
         let stored = try XCTUnwrap(try SwiftDataFoodStore(container: container).activeItems(fridgeID: fridge.id).first)
         XCTAssertEqual(stored.quantity, 3)
         XCTAssertEqual(stored.compartmentID, fridge.cabinetCompartments[1].id)
-        let monitor = CloudSyncMonitor(center: NotificationCenter())
-        monitor.updateAccount(.noAccount)
-        XCTAssertEqual(monitor.status(enabled: true).title, "iCloud 無法使用")
-        XCTAssertTrue(monitor.status(enabled: true).detail?.contains("資料仍保存在這台裝置上") == true)
     }
 
     // MARK: 10, 11, 15 — conflicts between devices
@@ -383,101 +304,9 @@ final class CloudSyncTests: XCTestCase {
 
     // MARK: 13, 14 — accounts (policy A)
 
-    func testAccountTransitions() {
-        XCTAssertEqual(CloudAccountTransition.evaluate(stored: nil, current: "a", state: .available), .firstAccount("a"))
-        XCTAssertEqual(CloudAccountTransition.evaluate(stored: "a", current: "a", state: .available), .sameAccount)
-        XCTAssertEqual(CloudAccountTransition.evaluate(stored: "a", current: "b", state: .available), .accountChanged("b"))
-        XCTAssertEqual(CloudAccountTransition.evaluate(stored: "a", current: nil, state: .noAccount), .unavailable)
-        XCTAssertEqual(CloudAccountTransition.evaluate(stored: "a", current: "a", state: .temporarilyUnavailable), .unavailable)
-        let monitor = CloudSyncMonitor(center: NotificationCenter())
-        for state in [CloudAccountState.noAccount, .restricted, .temporarilyUnavailable, .unknown] {
-            monitor.updateAccount(state)
-            XCTAssertEqual(monitor.status(enabled: true), .unavailable(state))
-            XCTAssertNotNil(monitor.status(enabled: true).detail)
-        }
-        XCTAssertEqual(monitor.status(enabled: false), .off)
-    }
-
-    func testAccountChangeKeepsThePreviousAccountsSnapshotAndAsksNothingSilently() throws {
-        let settings = settings()
-        settings.accountFingerprint = "aaaa"
-        let snapshots = ProtectionSnapshots(directory: work.appendingPathComponent("Protection"))
-        let container = try SwiftDataFridgeStore.makeContainer(inMemory: true)
-        let fridge = try SwiftDataFridgeStore(container: container).loadAll()[0].fridge
-        try SwiftDataFoodStore(container: container).upsert(food("A 的牛奶", in: fridge))
-        let service = backupService(container)
-        snapshots.refresh(using: service, settings: settings, account: "aaaa")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshots.url(for: .account("aaaa")).path))
-
-        var noticeShown = 0
-        let coordinator = CloudSyncCoordinator(settings: settings, monitor: CloudSyncMonitor(center: NotificationCenter()),
-                                               snapshots: snapshots, account: FakeAccountProvider(state: .available, fingerprint: "bbbb"))
-        coordinator.presentAccountNotice = { noticeShown += 1 }
-        coordinator.apply(.accountChanged("bbbb"))
-        XCTAssertEqual(settings.accountFingerprint, "bbbb")
-        XCTAssertTrue(settings.hasPendingAccountNotice)
-        XCTAssertEqual(noticeShown, 1)
-        // iOS replaces the data with account B's (simulated: empty). Account A's copy is untouched.
-        for item in try SwiftDataFoodStore(container: container).activeItems(fridgeID: fridge.id) {
-            try SwiftDataFoodStore(container: container).delete(id: item.id)
-        }
-        snapshots.refresh(using: service, settings: settings, account: "bbbb")
-        let a = try BackupValidator.decode(Data(contentsOf: snapshots.url(for: .account("aaaa"))))
-        XCTAssertEqual(a.foods.map(\.name), ["A 的牛奶"], "restorable explicitly")
-        XCTAssertTrue(try BackupValidator.decode(Data(contentsOf: snapshots.url(for: .account("bbbb")))).foods.isEmpty)
-        XCTAssertEqual(Set(snapshots.list().map(\.kind)), [.account("aaaa"), .account("bbbb")])
-    }
-
     // MARK: 16 — preferences
 
-    func testFavoritesSyncThroughKeyValueStorage() throws {
-        let kvs = FakeKeyValueStore()
-        let favorites = UserDefaultsFavoriteFoodStore(defaults: defaults)
-        var mine = FavoriteFoods()
-        try mine.pin(FoodTemplate(name: "豆腐", categoryID: FoodCategoryCatalog.otherID, unit: "盒", preferredCompartmentID: nil))
-        favorites.save(mine)
-        let center = NotificationCenter()
-        let sync = PreferenceCloudSync(cloud: kvs, defaults: defaults)
-        sync.start(center: center)
-        defer { sync.stop() }
-        XCTAssertNotNil(kvs.values[UserDefaultsFavoriteFoodStore.key], "first device uploads its favorites")
-        // Local change → uploaded.
-        UserDefaultsFavoriteCategoryStore(defaults: defaults).save(FavoriteCategories(ids: ["fruits"]))
-        XCTAssertEqual(kvs.values[UserDefaultsFavoriteCategoryStore.key] as? [String], ["fruits"])
-        // Change from another device → applied locally.
-        var theirs = FavoriteFoods()
-        try theirs.pin(FoodTemplate(name: "吐司", categoryID: FoodCategoryCatalog.otherID, unit: "條", preferredCompartmentID: nil))
-        kvs.values[UserDefaultsFavoriteFoodStore.key] = try JSONEncoder().encode(theirs.templates)
-        let applied = expectation(forNotification: .favoritesDidChangeExternally, object: nil)
-        center.post(name: NSUbiquitousKeyValueStore.didChangeExternallyNotification, object: kvs,
-                    userInfo: [NSUbiquitousKeyValueStoreChangedKeysKey: [UserDefaultsFavoriteFoodStore.key]])
-        wait(for: [applied], timeout: 2)
-        XCTAssertEqual(favorites.load().templates.map(\.name), ["吐司"])
-        XCTAssertNil(NotificationPreferences.self == NotificationPreferences.self ? kvs.values[UserDefaultsNotificationPreferencesStore.key] : nil,
-                     "notification settings stay on the device")
-    }
-
     /// Goes through the real NSUbiquitousKeyValueStore type (a recursive conformance once crashed at launch).
-    func testRealKeyValueStoreConformance() {
-        let store: KeyValueCloudStore = NSUbiquitousKeyValueStore()
-        let key = "test-\(UUID().uuidString)"
-        store.set(["a", "b"], forKey: key)
-        XCTAssertEqual(store.object(forKey: key) as? [String], ["a", "b"])
-        store.set(nil, forKey: key)
-        XCTAssertNil(store.object(forKey: key))
-        _ = store.synchronize()
-    }
-
-    func testSecondDeviceTakesFavoritesAlreadyInICloud() {
-        let kvs = FakeKeyValueStore()
-        kvs.values[UserDefaultsFavoriteCategoryStore.key] = ["meat"]
-        defaults.set(["fruits"], forKey: UserDefaultsFavoriteCategoryStore.key)
-        let sync = PreferenceCloudSync(cloud: kvs, defaults: defaults)
-        sync.start(center: NotificationCenter())
-        defer { sync.stop() }
-        XCTAssertEqual(UserDefaultsFavoriteCategoryStore(defaults: defaults).load().ids, ["meat"])
-    }
-
     // MARK: 17–21 — magnets and photos
 
     func testMagnetMetadataFromAnotherDeviceIsShownInOrder() throws {
@@ -568,46 +397,6 @@ final class CloudSyncTests: XCTestCase {
     // MARK: 22, 23 — reminders and widgets after an import
 
     @MainActor
-    func testImportedChangesRefreshScreensRemindersAndWidgets() async throws {
-        let container = try SwiftDataFridgeStore.makeContainer(inMemory: true)
-        let selection = InMemoryFridgeSelectionStore()
-        var session = try AppBootstrap.makeSession(container: container, mode: .persistent, selection: selection).get()
-        let fridge = session.loadResult.fridge
-        var refreshed = 0
-        let coordinator = CloudSyncCoordinator(settings: settings(), monitor: CloudSyncMonitor(center: NotificationCenter()),
-                                               snapshots: ProtectionSnapshots(directory: work), account: FakeAccountProvider(state: .noAccount))
-        coordinator.currentSession = { session }
-        coordinator.canRefresh = { true }
-        coordinator.refresh = { _ in
-            refreshed += 1
-            session = try! AppBootstrap.makeSession(container: container, mode: .persistent, selection: selection).get()
-        }
-        coordinator.didOpen(cloudActive: false, problem: nil)
-        defer { coordinator.stop() }
-        coordinator.checkImportedData()
-        XCTAssertEqual(refreshed, 0, "nothing changed → no rebuild")
-        // Another device added food that expires tomorrow.
-        var item = food("鮮奶", in: fridge)
-        item.expirationDate = Date().addingTimeInterval(86_400)
-        try deliver(foods: [item], into: container)
-        coordinator.checkImportedData()
-        XCTAssertEqual(refreshed, 1)
-        coordinator.checkImportedData()
-        XCTAssertEqual(refreshed, 1, "the same import is not applied twice")
-
-        // The rebuilt home schedules the reminder (once) and writes the widget snapshot.
-        let client = FakeNotificationClient()
-        let file = WidgetSnapshotFile(url: work.appendingPathComponent("widget.json"))
-        let publisher = WidgetSnapshotPublisher(file: file, reloader: CountingReloader())
-        let home = FridgeHomeViewController(session: session, notificationClient: client, widgetPublisher: publisher)
-        home.loadViewIfNeeded()
-        _ = await home.syncAfterRestore()
-        _ = await home.syncAfterRestore()
-        XCTAssertEqual(client.pending.values.filter { $0.foodID == item.id }.count, 1, "no duplicate notification")
-        publisher.waitUntilIdle()
-        XCTAssertEqual(file.read()?.fridges.first?.refrigeratorID, fridge.id)
-    }
-
     func testOnlyTheRealStoreUsesTheRealPhotoFolder() throws {
         let memory = try SwiftDataFridgeStore.makeContainer(inMemory: true)
         let file = try SwiftDataFridgeStore.makeContainer(url: work.appendingPathComponent("other.store"))
@@ -650,14 +439,9 @@ final class CloudSyncTests: XCTestCase {
         let service = BackupService(inventory: SwiftDataInventoryBackupStore(container: container),
                                     preferences: UserDefaultsPreferencesBackupStore(defaults: defaults, selection: InMemoryFridgeSelectionStore()),
                                     recoveryDirectory: nil, exportDirectory: work.appendingPathComponent("Export"), applicationVersion: "test")
-        let settings = settings()
-        let monitor = CloudSyncMonitor(center: NotificationCenter())
-        for enabled in [true, false] {
-            settings.isEnabled = enabled
-            monitor.updateAccount(enabled ? .available : .noAccount)
-            monitor.handle(.init(id: UUID(), kind: .exporting, ended: .now, succeeded: false))
+        do {
             let url = try service.exportFile()
-            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "export works with sync \(enabled ? "on" : "off") and failing")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "export works without any iCloud")
             let text = try String(contentsOf: url, encoding: .utf8).lowercased()
             for leaked in ["cloudkit", "recordname", "fingerprint", "icloud", "account", "transaction"] {
                 XCTAssertFalse(text.contains(leaked), "no \(leaked) in a shared file")

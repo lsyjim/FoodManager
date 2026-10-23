@@ -10,6 +10,8 @@ final class BackupFlow: NSObject, UIDocumentPickerDelegate {
     /// Whether restored data will also go to the user's iCloud (shown in the preview before confirming).
     private let syncsToCloud: () -> Bool
     private weak var presenter: UIViewController?
+    /// The local backup service (also used to build iCloud backups).
+    var backupService: BackupService { service }
 
     init(service: BackupService, syncsToCloud: @escaping () -> Bool = { false }, onRestored: @escaping (String?) -> Void) {
         self.service = service
@@ -80,10 +82,25 @@ final class BackupFlow: NSObject, UIDocumentPickerDelegate {
         case let .success(backup):
             let preview = BackupPreviewViewController(backup: backup, service: service, syncsToCloud: syncsToCloud(),
                                                       onRestored: onRestored)
+            preview.safetyExport = { [weak self] viewController in self?.export(from: viewController, sourceView: nil) }
             presenter.navigationController?.pushViewController(preview, animated: true)
         case let .failure(error):
             Self.showAlert(title: "無法匯入備份", message: ((error as? BackupError)?.message ?? "無法讀取這個檔案。") + "\n目前的資料沒有變更。", on: presenter)
         }
+    }
+
+    /// Preview of a backup that is already in memory and validated (e.g. downloaded from iCloud). Nothing changes until
+    /// the user confirms there; the current data can be exported first.
+    func preview(backup: FoodManagerBackup, from presenter: UIViewController) {
+        do {
+            try service.checkRestorable(backup)
+        } catch {
+            return Self.showAlert(title: "無法還原", message: ((error as? BackupError)?.message ?? "無法使用這份備份。") + "\n目前的資料沒有變更。",
+                                  on: presenter)
+        }
+        let preview = BackupPreviewViewController(backup: backup, service: service, syncsToCloud: syncsToCloud(), onRestored: onRestored)
+        preview.safetyExport = { [weak self] viewController in self?.export(from: viewController, sourceView: nil) }
+        presenter.navigationController?.pushViewController(preview, animated: true)
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
@@ -106,6 +123,8 @@ final class BackupPreviewViewController: UITableViewController {
     private let onRestored: (String?) -> Void
     private var rows: [(title: String, value: String)] = []
     private var isRestoring = false
+    /// Exports the current data first (offered next to the restore confirmation).
+    var safetyExport: ((UIViewController) -> Void)?
 
     init(backup: FoodManagerBackup, service: BackupService, syncsToCloud: Bool = false, onRestored: @escaping (String?) -> Void) {
         self.backup = backup
@@ -179,6 +198,12 @@ final class BackupPreviewViewController: UITableViewController {
                                       message: "目前的冰箱與食材會被這份備份完全取代（\(summary.fridgeNames.count) 台冰箱、\(summary.activeFoodCount) 筆食材、\(summary.historyCount) 筆紀錄）。這個動作無法復原。",
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        if let safetyExport {
+            alert.addAction(UIAlertAction(title: "先匯出目前資料", style: .default) { [weak self] _ in
+                guard let self else { return }
+                safetyExport(self)
+            })
+        }
         alert.addAction(UIAlertAction(title: "取代並還原", style: .destructive) { [weak self] _ in self?.restore() })
         present(alert, animated: true)
     }

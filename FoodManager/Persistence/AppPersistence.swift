@@ -27,42 +27,19 @@ final class AppPersistence {
     typealias ContainerFactory = () throws -> ModelContainer
 
     let mode: PersistenceMode
-    /// Whether the last successful `open()` mirrors the store to iCloud.
-    private(set) var isCloudActive = false
-    /// Why sync couldn't start (shown in 設定), e.g. the pre-sync protection copy failed.
-    private(set) var cloudProblem: String?
     private let factory: ContainerFactory
-    private let cloudFactory: (() throws -> (ModelContainer, Bool, String?))?
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "Persistence")
 
     init(mode: PersistenceMode, factory: @escaping ContainerFactory) {
         self.mode = mode
         self.factory = factory
-        cloudFactory = nil
     }
 
-    /// `cloudFactory` returns the container, whether CloudKit is on, and a problem to show.
-    /// (`cloudAware` only keeps this initializer apart from the trailing-closure one above.)
-    init(mode: PersistenceMode, openingWithCloud cloudFactory: @escaping () throws -> (ModelContainer, Bool, String?), cloudAware: Bool) {
-        self.mode = mode
-        self.cloudFactory = cloudFactory
-        factory = { try cloudFactory().0 }
-    }
-
-    /// The user's store, mirrored to their private iCloud database when sync is on and the one-time protection
-    /// copy succeeded. Without iCloud (signed out, offline, disabled) the same store keeps working locally.
-    static func production(settings: CloudSyncSettings = .shared, snapshots: ProtectionSnapshots = .shared) -> AppPersistence {
-        AppPersistence(mode: .persistent, openingWithCloud: {
-            guard settings.isEnabled else { return (try SwiftDataFridgeStore.makeContainer(), false, nil) }
-            let outcome = CloudSyncPreparation.prepareIfNeeded(storeURL: SwiftDataFridgeStore.defaultStoreURL, settings: settings,
-                                                                snapshots: snapshots, magnetImageDirectory: MagnetImageStore.defaultDirectory)
-            switch outcome {
-            case .ready:
-                return (try SwiftDataFridgeStore.makeContainer(cloudKit: true), true, nil)
-            case let .failed(message):
-                return (try SwiftDataFridgeStore.makeContainer(), false, message)
-            }
-        }, cloudAware: true)
+    /// The user's store, local only (Phase 5E). Personal data is never mirrored to iCloud automatically; the user
+    /// backs it up and restores it explicitly (`ICloudBackupService`). The file is the same one earlier versions
+    /// mirrored, opened without CloudKit: IDs and rows stay as they are.
+    static func production() -> AppPersistence {
+        AppPersistence(mode: .persistent) { try SwiftDataFridgeStore.makeContainer() }
     }
 
     static func inMemoryForTesting() -> AppPersistence {
@@ -72,12 +49,6 @@ final class AppPersistence {
     /// Attempts to open storage. Safe to call again for a retry.
     func open() -> PersistenceState {
         do {
-            if let cloudFactory {
-                let (container, cloud, problem) = try cloudFactory()
-                isCloudActive = cloud
-                cloudProblem = problem
-                return .available(container, mode)
-            }
             return .available(try factory(), mode)
         } catch {
             // Technical details are logged privately (not visible in shared logs), never shown in the UI.
@@ -130,6 +101,12 @@ enum AppBootstrap {
         case let .unavailable(error):
             return .failure(error)
         case let .available(container, mode):
+            // Before the first local-only session (and before a default fridge could be created): protect the data
+            // and tell a new installation from an existing one.
+            if mode == .persistent {
+                LocalOnlyMigration.runIfNeeded(container: container, snapshots: .shared,
+                                               magnetImages: MagnetImageStore(directory: MagnetImageStore.directory(for: container)))
+            }
             // Tests and UI tests keep their selection in memory, never in the user's preferences.
             let selection: FridgeSelectionStore = mode == .persistent ? UserDefaultsFridgeSelectionStore() : InMemoryFridgeSelectionStore()
             return makeSession(container: container, mode: mode, selection: selection, sharing: sharing(container))
@@ -150,7 +127,7 @@ enum AppBootstrap {
         let magnetStore: MagnetStore
         if let shared = sharing?.inventory {
             sharing?.finishPendingRemovals()
-            fridgeStore = RoutingFridgeStore(personal: personalFridges, shared: shared)
+            fridgeStore = RoutingFridgeStore(personal: personalFridges, shared: shared, personalFood: personalFood)
             foodStore = RoutingFoodStore(personal: personalFood, shared: shared)
             magnetStore = RoutingMagnetStore(personal: personalMagnets, shared: shared)
         } else {
@@ -165,6 +142,7 @@ enum AppBootstrap {
             directory.onFridgeDeleted = { magnets.removeUnreferencedImages() }
             if let shared = sharing?.inventory {
                 directory.reservedSlots = { (try? shared.store.reservedSlots()) ?? 0 }
+                if let routing = fridgeStore as? RoutingFridgeStore { directory.historyPriority = routing.historyPriority }
             }
             return .success(AppSession(fridgeStore: fridgeStore, foodStore: foodStore, loadResult: directory.selected,
                                        mode: mode, directory: directory, container: container, selection: selection,

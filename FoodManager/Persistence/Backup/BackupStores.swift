@@ -158,7 +158,6 @@ final class UserDefaultsPreferencesBackupStore: PreferencesBackupStore {
         defaults.set(favoriteFoods, forKey: UserDefaultsFavoriteFoodStore.key)
         defaults.set(notifications, forKey: UserDefaultsNotificationPreferencesStore.key)
         selection.selectedFridgeID = preferences.selectedFridgeID
-        for key in PreferenceCloudSync.syncedKeys { PreferenceCloudSync.noteLocalChange(key: key, defaults: defaults) }
         // UserDefaults never reports write errors, so read everything back.
         guard readPreferences() == preferences else { throw PreferencesBackupError.notPersisted }
     }

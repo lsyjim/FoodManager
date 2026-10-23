@@ -15,6 +15,8 @@ final class ProtectionSnapshots {
             case local
             /// Taken right before a fridge is turned into a shared fridge (Phase 5D).
             case beforeSharing
+            /// Taken once, before this device stopped mirroring personal data to iCloud (Phase 5E).
+            case beforeLocalOnly
         }
 
         let kind: Kind
@@ -30,6 +32,7 @@ final class ProtectionSnapshots {
 
     static let preCloudFileName = "PreCloud-Backup.json"
     static let beforeSharingFileName = "BeforeSharing-Backup.json"
+    static let beforeLocalOnlyFileName = "BeforeLocalOnly-Backup.json"
     let directory: URL
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "CloudSync")
 
@@ -41,6 +44,7 @@ final class ProtectionSnapshots {
         case let .account(hash): return directory.appendingPathComponent("Account-\(hash).json")
         case .local: return directory.appendingPathComponent("Local.json")
         case .beforeSharing: return directory.appendingPathComponent(Self.beforeSharingFileName)
+        case .beforeLocalOnly: return directory.appendingPathComponent(Self.beforeLocalOnlyFileName)
         }
     }
 
@@ -54,6 +58,8 @@ final class ProtectionSnapshots {
                 kind = .preCloud
             } else if url.lastPathComponent == Self.beforeSharingFileName {
                 kind = .beforeSharing
+            } else if url.lastPathComponent == Self.beforeLocalOnlyFileName {
+                kind = .beforeLocalOnly
             } else if name.hasPrefix("Account-") {
                 kind = .account(String(name.dropFirst("Account-".count)))
             } else if name == "Local" {
@@ -83,20 +89,6 @@ final class ProtectionSnapshots {
         _ = try FileManager.default.replaceItemAt(url, withItemAt: staging)
     }
 
-    /// Updates the rolling snapshot for the current account (or for "no account") if the data changed.
-    /// A snapshot of one account is never overwritten while another account is signed in.
-    func refresh(using backups: BackupService, settings: CloudSyncSettings, account: String?) {
-        do {
-            let backup = try backups.makeBackup(allowMissingPhotos: true)
-            let fingerprint = Self.fingerprint(backup) + (account ?? "-")
-            guard fingerprint != settings.protectionFingerprint else { return }
-            try write(backup, kind: account.map(Snapshot.Kind.account) ?? .local)
-            settings.protectionFingerprint = fingerprint
-        } catch {
-            logger.error("Protection snapshot failed: \(String(describing: error), privacy: .private)")
-        }
-    }
-
     static func fingerprint(_ backup: FoodManagerBackup) -> String {
         var copy = backup
         copy.exportedAt = Date(timeIntervalSinceReferenceDate: 0)
@@ -106,66 +98,61 @@ final class ProtectionSnapshots {
     }
 }
 
-/// One-time preparation before a device first opens its store with CloudKit (policy A). Nothing is deleted,
-/// moved or replaced; if any step fails, the app keeps working locally and sync stays off until it succeeds.
-///
-/// 1. Copy the raw store files (before the schema upgrade touches them).
-/// 2. Open the store locally (lightweight migration: unique constraints removed, defaults added).
-/// 3. Give existing local magnet photos synced image records.
-/// 4. Write a JSON backup of everything and verify it reads back.
-enum CloudSyncPreparation {
-    private static let logger = Logger(subsystem: "FoodManager.HowCode", category: "CloudSync")
+/// Phase 5E, once per device: the store earlier versions mirrored to iCloud is now opened local-only. Nothing in
+/// the file changes (same location, same IDs, old iCloud records left untouched). Before the first local-only
+/// session a verified JSON copy of everything is kept, and the first-run state is decided:
+/// - data present → an existing installation (never asked about iCloud backups);
+/// - empty store → a new installation: the app may offer restoring an iCloud backup (`FirstRunState.pending`).
+enum LocalOnlyMigration {
+    private static let logger = Logger(subsystem: "FoodManager.HowCode", category: "Persistence")
+    static let doneKey = "personalStorage.localOnlyMigrated"
 
     enum Outcome: Equatable {
-        case ready
-        case failed(String)
+        case alreadyDone
+        case existingData
+        case freshInstall
+        /// Data present but the protection copy couldn't be written; retried on the next launch.
+        case snapshotFailed
     }
 
-    static func prepareIfNeeded(storeURL: URL, settings: CloudSyncSettings, snapshots: ProtectionSnapshots,
-                                magnetImageDirectory: URL, rawCopyDirectory: URL? = nil,
-                                preferences: PreferencesBackupStore = UserDefaultsPreferencesBackupStore(selection: UserDefaultsFridgeSelectionStore()),
-                                openLocal: (URL) throws -> ModelContainer = { try SwiftDataFridgeStore.makeContainer(url: $0) }) -> Outcome {
-        guard !settings.isPreparedForCloud else { return .ready }
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: storeURL.path) else {
-            // Fresh install: nothing local to protect.
-            settings.isPreparedForCloud = true
-            return .ready
+    @discardableResult
+    static func runIfNeeded(container: ModelContainer, snapshots: ProtectionSnapshots, magnetImages: MagnetImageStore?,
+                            defaults: UserDefaults = .standard,
+                            preferences: PreferencesBackupStore = UserDefaultsPreferencesBackupStore(selection: UserDefaultsFridgeSelectionStore())) -> Outcome {
+        guard !defaults.bool(forKey: doneKey) else { return .alreadyDone }
+        let hasData = !((try? SwiftDataFridgeStore(container: container).existingIDs()) ?? []).isEmpty
+        guard hasData else {
+            if FirstRunState.load(defaults) == nil { FirstRunState.pending.save(defaults) }
+            defaults.set(true, forKey: doneKey)
+            return .freshInstall
         }
+        // An existing installation never gets the "found an iCloud backup" question.
+        if FirstRunState.load(defaults) == nil { FirstRunState.decided.save(defaults) }
         do {
-            let copyRoot = rawCopyDirectory ?? snapshots.directory.appendingPathComponent("PreCloud-Store", isDirectory: true)
-            try copyStoreFiles(storeURL, to: copyRoot)
-            try autoreleasepool {
-                let container = try openLocal(storeURL)
-                let images = MagnetImageStore(directory: magnetImageDirectory)
-                let library = MagnetLibrary(store: SwiftDataMagnetStore(container: container), images: images)
-                try library.backfillImageRecords()
-                let service = BackupService(inventory: SwiftDataInventoryBackupStore(container: container),
-                                            preferences: preferences,
-                                            magnetImages: images, recoveryDirectory: nil)
-                try snapshots.write(try service.makeBackup(allowMissingPhotos: true), kind: .preCloud)
-            }
-            settings.isPreparedForCloud = true
-            return .ready
+            let service = BackupService(inventory: SwiftDataInventoryBackupStore(container: container), preferences: preferences,
+                                        magnetImages: magnetImages, recoveryDirectory: nil)
+            try snapshots.write(try service.makeBackup(allowMissingPhotos: true), kind: .beforeLocalOnly)
+            defaults.set(true, forKey: doneKey)
+            return .existingData
         } catch {
-            logger.error("Pre-sync preparation failed: \(String(describing: error), privacy: .private)")
-            return .failed("無法建立同步前的保護副本，iCloud 同步暫不開啟，資料仍保存在這台裝置上。")
+            logger.error("Local-only migration snapshot failed; will retry: \(String(describing: error), privacy: .private)")
+            return .snapshotFailed
         }
     }
+}
 
-    /// Copies the store and its -wal / -shm files and checks the sizes match. An existing copy is kept.
-    static func copyStoreFiles(_ storeURL: URL, to directory: URL) throws {
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        for suffix in ["", "-wal", "-shm"] {
-            let source = URL(fileURLWithPath: storeURL.path + suffix)
-            guard fileManager.fileExists(atPath: source.path) else { continue }
-            let target = directory.appendingPathComponent(source.lastPathComponent)
-            if fileManager.fileExists(atPath: target.path) { continue }
-            try fileManager.copyItem(at: source, to: target)
-            let a = try fileManager.attributesOfItem(atPath: source.path)[.size] as? Int
-            let b = try fileManager.attributesOfItem(atPath: target.path)[.size] as? Int
-            guard a == b else { throw CocoaError(.fileWriteUnknown) }
-        }
+/// Whether a new installation still has to choose between restoring an iCloud backup and starting fresh.
+enum FirstRunState: String {
+    case pending
+    case decided
+
+    static let key = "personalStorage.firstRunChoice"
+
+    static func load(_ defaults: UserDefaults = .standard) -> FirstRunState? {
+        defaults.string(forKey: key).flatMap(FirstRunState.init(rawValue:))
+    }
+
+    func save(_ defaults: UserDefaults = .standard) {
+        defaults.set(rawValue, forKey: Self.key)
     }
 }

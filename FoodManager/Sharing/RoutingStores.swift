@@ -7,10 +7,23 @@ import Foundation
 final class RoutingFridgeStore: FridgeStore {
     let personal: SwiftDataFridgeStore
     let shared: SharedInventory
+    private let personalFood: FoodStore
 
-    init(personal: SwiftDataFridgeStore, shared: SharedInventory) {
+    init(personal: SwiftDataFridgeStore, shared: SharedInventory, personalFood: FoodStore? = nil) {
         self.personal = personal
         self.shared = shared
+        self.personalFood = personalFood ?? SwiftDataFoodStore(container: personal.container)
+    }
+
+    /// Where a deleted fridge's history may go, best first (nil: never — someone else's shared fridge).
+    /// Personal fridges first, then the user's own unshared, then their shared fridges (whose members see it).
+    func historyPriority(_ fridgeID: UUID) -> Int? {
+        switch shared.ownership(of: fridgeID) {
+        case nil: return 0
+        case .personalOwned: return 1
+        case .sharedOwned: return 2
+        case .sharedParticipant, .pendingInvitation, .unavailableOrRevoked: return nil
+        }
     }
 
     func load() throws -> FridgeLoadResult { try loadAll()[0] }
@@ -39,11 +52,38 @@ final class RoutingFridgeStore: FridgeStore {
         shared.contains(fridgeID) ? try shared.rename(fridgeID: fridgeID, to: name) : try personal.rename(fridgeID: fridgeID, to: name)
     }
 
-    /// A shared fridge can't be deleted or merged away here (stopping sharing / leaving comes first), and history of
-    /// a deleted personal fridge stays in the personal store (moved to another personal fridge).
+    /// Deletes an empty fridge; its history moves to `historyDestination` (in whichever store that fridge lives).
+    /// A fridge that is currently shared must stop sharing first; a joined fridge is left, not deleted.
     func deleteFridge(_ fridgeID: UUID, moveHistoryTo historyDestination: UUID) throws {
-        guard !shared.contains(fridgeID), !shared.contains(historyDestination) else { throw SharingRoutingError.sharedFridgeLocked }
-        try personal.deleteFridge(fridgeID, moveHistoryTo: historyDestination)
+        let sourceIsShared = shared.contains(fridgeID)
+        if sourceIsShared {
+            switch shared.ownership(of: fridgeID) {
+            case .sharedOwned: throw SharingRoutingError.stopSharingFirst
+            case .personalOwned: break
+            default: throw SharingRoutingError.leaveInstead
+            }
+        }
+        guard historyPriority(historyDestination) != nil else { throw SharingRoutingError.historyNotShared }
+        let destinationIsShared = shared.contains(historyDestination)
+        guard sourceIsShared || destinationIsShared else {
+            return try personal.deleteFridge(fridgeID, moveHistoryTo: historyDestination)
+        }
+
+        // Across the two stores: move the history first, then delete the fridge (nothing is lost if that fails).
+        let items = sourceIsShared ? try shared.items(fridgeID: fridgeID)
+            : try personalFood.activeItems(fridgeID: fridgeID) + personalFood.consumedItems(fridgeID: fridgeID)
+        let active = items.filter(\.isActive).count
+        guard active == 0 else { throw FridgeStoreError.fridgeHasActiveFood(active) }
+        for var item in items {
+            item.fridgeID = historyDestination
+            if destinationIsShared { try shared.upsert(item) } else { try personalFood.upsert(item) }
+            if sourceIsShared && !destinationIsShared { try shared.delete(id: item.id) }
+        }
+        if sourceIsShared {
+            try shared.removeOwnedFridge(fridgeID)
+        } else {
+            try personal.removeFridgeAfterSharing(fridgeID)
+        }
     }
 
     func mergeFridge(_ sourceID: UUID, into targetID: UUID, compartmentID: UUID) throws {
@@ -54,8 +94,19 @@ final class RoutingFridgeStore: FridgeStore {
 
 enum SharingRoutingError: Error, Equatable {
     case sharedFridgeLocked
+    case stopSharingFirst
+    case leaveInstead
+    /// History can't be handed to someone else's shared fridge.
+    case historyNotShared
 
-    var message: String { "共享中的冰箱無法刪除或合併。" }
+    var message: String {
+        switch self {
+        case .sharedFridgeLocked: return "共享冰箱無法合併。"
+        case .stopSharingFirst: return "這台冰箱正在共享中，請先到「成員與申請」停止共享，再刪除冰箱。"
+        case .leaveInstead: return "這是別人共享給你的冰箱，請改用「離開共享冰箱」。"
+        case .historyNotShared: return "至少要保留一台自己的冰箱，才能刪除這台冰箱。"
+        }
+    }
 }
 
 final class RoutingFoodStore: FoodStore {

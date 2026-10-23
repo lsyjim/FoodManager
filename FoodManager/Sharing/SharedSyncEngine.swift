@@ -62,6 +62,7 @@ final class SharedSyncEngine: CKSyncEngineDelegate, @unchecked Sendable {
 
     /// Feeds local edits from `SharedInventory` to the right engine.
     func enqueue(_ change: SharedInventory.Change) {
+        change.deletedFridgeZones.forEach(queueZoneDeletion(for:))
         queueDelete(change.deletes, scope: change.scope)
         queueSave(change.saves, scope: change.scope)
     }

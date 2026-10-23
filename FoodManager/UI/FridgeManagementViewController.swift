@@ -66,7 +66,8 @@ enum FridgeActions {
         do {
             summary = try directory.deletionSummary(for: fridge.id)
         } catch {
-            return FoodActions.showError((error as? FridgeDirectoryError)?.message ?? "無法讀取冰箱資料，請再試一次。", on: presenter)
+            return FoodActions.showError((error as? FridgeDirectoryError)?.message ?? (error as? SharingRoutingError)?.message
+                                         ?? "無法讀取冰箱資料，請再試一次。", on: presenter)
         }
         guard summary.activeFoodCount == 0 else {
             return FoodActions.showError(FridgeDirectoryError.hasActiveFood(summary.activeFoodCount).message
@@ -75,6 +76,7 @@ enum FridgeActions {
         var message = "「\(fridge.name)」的隔層設定會被刪除，無法復原。"
         if summary.historyCount > 0 {
             message += "\n\(summary.historyCount) 筆食用紀錄會移到「\(summary.remainingFridge.name)」保留。"
+            if directory.historyPriority(summary.remainingFridge.id) == 2 { message += "（那是共享冰箱，成員也看得到這些紀錄）" }
         }
         let alert = UIAlertController(title: "刪除冰箱？", message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -83,7 +85,8 @@ enum FridgeActions {
                 try directory.delete(fridge.id)
                 onDeleted(summary.remainingFridge)
             } catch {
-                FoodActions.showError((error as? FridgeDirectoryError)?.message ?? "刪除失敗，冰箱沒有變更。請再試一次。", on: presenter)
+                FoodActions.showError((error as? FridgeDirectoryError)?.message ?? (error as? SharingRoutingError)?.message
+                                      ?? "刪除失敗，冰箱沒有變更。請再試一次。", on: presenter)
             }
         })
         presenter.present(alert, animated: true)
@@ -144,6 +147,7 @@ final class FridgeManagementViewController: UITableViewController {
     }
 
     @objc private func reload() {
+        if sharing != nil { try? directory.reload() } // shared fridges can appear or go away while this is open
         reloadSharedRows()
         unplacedCount = (try? directory.unplacedItems().count) ?? 0
         tableView.reloadData()
@@ -330,11 +334,15 @@ final class FridgeManagementViewController: UITableViewController {
             })
         }
         if let sharing, ownership == .sharedParticipant {
+            // Shown, but explained on tap: members can't rename or delete someone else's fridge.
+            for action in ["重新命名", "刪除冰箱"] {
+                sheet.addAction(UIAlertAction(title: action, style: .default) { [weak self] _ in self?.showOwnerOnly(action) })
+            }
             sheet.addAction(UIAlertAction(title: "離開共享冰箱", style: .destructive) { [weak self] _ in
                 self?.confirmLeave(fridge.id, name: fridge.name, sharing: sharing)
             })
         }
-        if directory.fridges.count > 1 && ownership == .personalOwned {
+        if directory.fridges.count > 1 && (ownership == .personalOwned || ownership == .sharedOwned) {
             sheet.addAction(UIAlertAction(title: "刪除冰箱", style: .destructive) { [weak self] _ in
                 guard let self else { return }
                 FridgeActions.presentDelete(fridge, directory: self.directory, from: self) { [weak self] remaining in
@@ -398,6 +406,14 @@ final class FridgeManagementViewController: UITableViewController {
     }
 
     // MARK: - Joining and leaving (Phase 5D-4)
+
+    private func showOwnerOnly(_ action: String) {
+        let alert = UIAlertController(title: "只有冰箱主人可以\(action)",
+                                      message: "這是別人共享給你的冰箱。你可以新增、編輯和取用食材；冰箱名稱、隔層與磁鐵由冰箱主人管理。如果不想再使用，可以選「離開共享冰箱」。",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
+    }
 
     private func presentJoin() {
         guard let sharing else { return }

@@ -11,16 +11,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Native App Store rating prompt (real data only: tests and UI tests never count usage or ask).
     private lazy var review: ReviewRequestCoordinator? = persistence.mode == .persistent ? ReviewRequestCoordinator() : nil
     private var reviewCheck: Task<Void, Never>?
-    private lazy var cloudSync: CloudSyncCoordinator = {
-        let coordinator = CloudSyncCoordinator()
-        coordinator.currentSession = { [weak self] in self?.currentSession }
-        coordinator.canRefresh = { [weak self] in self?.home?.canBeRebuilt ?? false }
-        coordinator.refresh = { [weak self] session in self?.reloadAfterCloudImport(from: session) }
-        coordinator.presentAccountNotice = { [weak self] in self?.presentAccountNoticeIfNeeded() }
-        return coordinator
-    }()
-    /// Shared refrigerators (Phase 5D): only while `SharingPolicy` is active and iCloud sync runs. Release 1.0 never
-    /// creates them.
+    /// Manual iCloud backups (Phase 5E). Personal data never syncs on its own; only real data can be backed up.
+    private lazy var icloudBackup: ICloudBackupService? = persistence.mode == .persistent ? ICloudBackupService(store: CloudKitBackupStore()) : nil
+    /// Shared refrigerators (Phase 5D): only while `SharingPolicy` is active. Release 1.0 never creates them. They have
+    /// their own sync (CKSyncEngine), independent of personal data.
     private var sharedEngine: SharedSyncEngine?
     private var sharedInventory: SharedInventory?
     /// 30-second fallback fetch while a shared fridge is on screen and the app is active.
@@ -34,9 +28,6 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.overrideUserInterfaceStyle = .light // fixed warm palette
         window.tintColor = Theme.Color.stroke
         self.window = window
-        NotificationCenter.default.addObserver(forName: .cloudSyncSettingDidChange, object: nil, queue: .main) { [weak self] _ in
-            self?.reopenStorage()
-        }
         start()
         window.makeKeyAndVisible()
         review?.recordLaunch()
@@ -50,16 +41,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Refunds, purchases on other devices or Ask-to-Buy approvals may have happened while in the background.
     func sceneWillEnterForeground(_ scene: UIScene) {
         monetization.ads?.appWillEnterForeground()
-        if persistence.mode == .persistent { cloudSync.checkAccount() }
         checkSharedInvitations()
         guard let entitlements = monetization.entitlementObserver else { return }
         Task { await entitlements.refresh() }
     }
 
-    /// Keeps the local protection copy current (policy A: recoverable after an iCloud sign-out or account change).
     func sceneDidEnterBackground(_ scene: UIScene) {
         monetization.ads?.appDidEnterBackground()
-        if persistence.mode == .persistent { cloudSync.refreshProtectionSnapshot() }
     }
 
     /// Widget tap while running or restored from the background.
@@ -100,10 +88,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         switch AppBootstrap.start(persistence, sharing: { [weak self] in self?.makeSharing(container: $0) }) {
         case let .success(session):
             show(session)
-            if persistence.mode == .persistent {
-                cloudSync.didOpen(cloudActive: persistence.isCloudActive, problem: persistence.cloudProblem)
-                presentAccountNoticeIfNeeded()
-            }
+            if persistence.mode == .persistent { offerICloudRestoreIfFirstRun() }
         case .failure:
             home = nil
             if let errorScreen = window?.rootViewController as? StorageUnavailableViewController {
@@ -122,6 +107,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let home = FridgeHomeViewController(session: session, entitlements: monetization.entitlementsForUI, ads: monetization.ads)
         home.onSwitchFridge = { [weak self] id, route in self?.switchFridge(to: id, from: session, then: route) }
         home.onDataRestored = { [weak self] failure in self?.reloadAfterRestore(from: session, failure: failure) }
+        home.icloudBackup = icloudBackup
         home.onVisibilityChange = { [weak self] visible, isShared in
             MainActor.assumeIsolated { self?.sharedPoller?.update(sharedFridgeVisible: visible && isShared) }
         }
@@ -181,27 +167,12 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         show(updated)
     }
 
-    /// Turning iCloud sync on/off reopens the store with the new setting. The old session is released first so
-    /// two containers never mirror the same store.
-    private func reopenStorage() {
-        cloudSync.stop()
-        MainActor.assumeIsolated { sharedPoller?.update(sharedFridgeVisible: false) }
-        sharedPoller = nil
-        sharedEngine = nil
-        sharedInventory = nil
-        window?.rootViewController = UIViewController()
-        home = nil
-        currentSession = nil
-        persistence = Self.makePersistence()
-        start()
-    }
-
     /// The shared-fridge pipeline for an opened container, or nil (sharing off, tests, or iCloud sync not running).
     private func makeSharing(container: ModelContainer) -> SharingService? {
         let policy = SharingPolicy.current
-        guard persistence.isCloudActive else { return nil }
         if sharedEngine == nil {
-            sharedEngine = SharedSyncEngine.make(policy: policy, mode: persistence.mode, cloudSyncEnabled: CloudSyncSettings.shared.isEnabled)
+            // CKSyncEngine follows the iCloud account itself (sign-in / sign-out events).
+            sharedEngine = SharedSyncEngine.make(policy: policy, mode: persistence.mode, cloudSyncEnabled: true)
             sharedEngine?.onChange = { [weak self] in self?.sharedDataChanged() }
             sharedEngine?.start()
             if let engine = sharedEngine {
@@ -235,10 +206,38 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidBecomeActive(_ scene: UIScene) {
         MainActor.assumeIsolated { sharedPoller?.update(appActive: true) }
+        startWatchingInvitations()
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
         MainActor.assumeIsolated { sharedPoller?.update(appActive: false) }
+        invitationTimer?.invalidate()
+        invitationTimer = nil
+    }
+
+    /// While an access request waits (or an approved join is still completing) and the app is active, checks every
+    /// 15 s, so 「等待主人同意」 turns into the fridge by itself once the owner approves.
+    private var invitationTimer: Timer?
+    private var isCheckingInvitations = false
+    static let invitationCheckInterval: TimeInterval = 15
+
+    private func startWatchingInvitations() {
+        guard invitationTimer == nil, currentSession?.sharing != nil else { return }
+        invitationTimer = Timer.scheduledTimer(withTimeInterval: Self.invitationCheckInterval, repeats: true) { [weak self] _ in
+            self?.checkInvitationsIfWaiting()
+        }
+    }
+
+    private func checkInvitationsIfWaiting() {
+        guard !isCheckingInvitations, let sharing = currentSession?.sharing,
+              let waiting = try? sharing.inventory.store.reservedSlots(), waiting > 0 else { return }
+        isCheckingInvitations = true
+        Task { @MainActor [weak self] in
+            _ = await sharing.checkPendingInvitations()
+            let stillWaiting = (try? sharing.inventory.store.reservedSlots()) ?? waiting
+            self?.isCheckingInvitations = false
+            if stillWaiting != waiting { self?.sharedDataChanged() }
+        }
     }
 
     /// Requests the owner approved while the app was away are joined now.
@@ -253,6 +252,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func sharedDataChanged() {
         // A newly readable inventory may carry the link to its read-only structure share.
         if let sharing = currentSession?.sharing { Task { await sharing.continueStructureJoins() } }
+        // Open lists (fridge management) re-read: a waiting request may have turned into a fridge.
+        NotificationCenter.default.post(name: .fridgesDidChange, object: nil)
         guard let session = currentSession, home?.canBeRebuilt == true else {
             home?.refreshSharedIntegrations()
             return
@@ -260,16 +261,27 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         reloadAfterCloudImport(from: session)
     }
 
-    /// Policy A: after an iCloud account change the data shown belongs to the new account. Explain once where the
-    /// previous data is and how to restore it (restoring is always the user's explicit choice).
-    private func presentAccountNoticeIfNeeded() {
-        guard CloudSyncSettings.shared.hasPendingAccountNotice, let home, home.canBeRebuilt else { return }
-        CloudSyncSettings.shared.hasPendingAccountNotice = false
-        let alert = UIAlertController(title: "iCloud 帳號已變更",
-                                      message: "冰箱管理員現在顯示這個 iCloud 帳號的資料。原本的資料保留在這台裝置的保護副本中，需要時可到「設定 → 資料管理 → iCloud 自動同步」還原（還原的資料會同步到目前這個帳號）。",
-                                      preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "好", style: .default))
-        home.present(alert, animated: true)
+    /// A new installation (empty store, no choice made yet): if this iCloud account has personal backups, ask whether
+    /// to restore one or start fresh. Only backup metadata is read; nothing is downloaded or restored without the
+    /// user's choice and confirmation. If iCloud can't be asked right now, the question stays open (restoring is
+    /// always available in 設定) — an unreachable iCloud is never taken for "no backups".
+    private func offerICloudRestoreIfFirstRun() {
+        guard FirstRunState.load() == .pending, let icloudBackup else { return }
+        Task { @MainActor [weak self] in
+            guard let versions = try? await icloudBackup.versions() else { return }
+            guard let latest = versions.first else { return FirstRunState.decided.save() }
+            guard let self, FirstRunState.load() == .pending, let home = self.home else { return }
+            let alert = UIAlertController(
+                title: "找到 iCloud 冰箱備份",
+                message: "你的 iCloud 有 \(versions.count) 份冰箱管理員的備份（最新：\(latest.createdAt.formatted(.dateTime.year().month().day()))，\(latest.fridgeCount) 台冰箱、\(latest.activeFoodCount) 筆食材）。要還原，還是建立新的冰箱？之後也可以在「設定 → iCloud 備份」還原。",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "建立新的冰箱", style: .cancel) { _ in FirstRunState.decided.save() })
+            alert.addAction(UIAlertAction(title: "從 iCloud 還原", style: .default) { [weak home] _ in
+                FirstRunState.decided.save()
+                home?.presentICloudRestore()
+            })
+            home.present(alert, animated: true)
+        }
     }
 
     /// A food record was saved. Counts it, then — at a calm moment back on the fridge home (editor closed, nothing
