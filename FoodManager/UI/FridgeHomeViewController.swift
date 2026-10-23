@@ -71,7 +71,9 @@ final class FridgeHomeViewController: UIViewController {
     private let ads: AdsCoordinator?
     /// Closed-home banner; only placement in the app.
     private lazy var bannerContainer: BannerAdContainerView? = ads.map { ads in
-        BannerAdContainerView(makeLoader: makeBannerLoader ?? { GoogleBannerLoader(unitID: ads.configuration.bannerUnitID) })
+        makeBannerLoader.map { BannerAdContainerView(makeLoader: $0) }
+            ?? BannerAdContainerView(makeLoader: { GoogleBannerLoader(unitID: ads.configuration.bannerUnitID) },
+                                     estimateHeight: { GoogleBannerLoader.estimatedHeight(width: $0, compact: $1) })
     }
     private let makeBannerLoader: (() -> BannerAdLoading)?
 
@@ -163,6 +165,9 @@ final class FridgeHomeViewController: UIViewController {
     }
 
     /// Nothing is being edited or shown on top: safe to rebuild the screen with data that arrived from iCloud.
+    /// An interstitial is showing (it's presented over this screen).
+    var isAdOnScreen: Bool { ads?.isFullscreenAdActive == true }
+
     var canBeRebuilt: Bool {
         isViewLoaded && !isEditingLayout && presentedViewController == nil && navigationController?.topViewController === self
     }
@@ -178,8 +183,11 @@ final class FridgeHomeViewController: UIViewController {
         }
         let editor = MagnetEditorViewController(fridge: fridge, library: magnetLibrary, magnets: magnets)
         editor.onSaved = { [weak self] in
-            self?.reloadMagnets()
-            self?.showRouteMessage("已儲存冰箱裝飾")
+            guard let self else { return }
+            self.reloadMagnets()
+            self.showRouteMessage("已儲存冰箱裝飾")
+            // Ad rules (first save of a session, caps, consent, already loaded…) live in AdsCoordinator.
+            self.ads?.decorationSaved(presenter: self, presenterIdle: self.canBeRebuilt && self.currentScreen == .closedHome)
         }
         present(editor, animated: true)
     }
@@ -456,6 +464,9 @@ final class FridgeHomeViewController: UIViewController {
         // On short screens the dashboard moves up to make room for 裝飾冰箱 below it.
         let dashboardCentered = dashboardView.centerYAnchor.constraint(equalTo: closedFridgeButton.centerYAnchor)
         dashboardCentered.priority = .defaultHigh
+        // 裝飾冰箱 lines up with the fridge's bottom edge when there is room.
+        let decorateOnFridgeBottom = decorateButton.bottomAnchor.constraint(equalTo: closedFridgeButton.bottomAnchor)
+        decorateOnFridgeBottom.priority = .defaultHigh - 1
         // Fridge takes ~55% of the width but never exceeds the available height.
         let preferredWidth = closedFridgeButton.widthAnchor.constraint(equalTo: c.widthAnchor, multiplier: 0.55)
         preferredWidth.priority = .defaultHigh
@@ -484,8 +495,12 @@ final class FridgeHomeViewController: UIViewController {
 
             decorateButton.leadingAnchor.constraint(equalTo: dashboardView.leadingAnchor),
             decorateButton.trailingAnchor.constraint(lessThanOrEqualTo: dashboardView.trailingAnchor),
-            decorateButton.bottomAnchor.constraint(equalTo: closedFridgeButton.bottomAnchor),
+            decorateOnFridgeBottom,
+            // On short screens it may drop below the fridge's edge, but never out of the area.
+            decorateButton.bottomAnchor.constraint(lessThanOrEqualTo: c.bottomAnchor, constant: -8),
             dashboardView.bottomAnchor.constraint(lessThanOrEqualTo: decorateButton.topAnchor, constant: -12),
+            // Never above the closed area (e.g. under the header buttons on small screens).
+            dashboardView.topAnchor.constraint(greaterThanOrEqualTo: c.topAnchor, constant: 8),
         ])
     }
 
@@ -902,20 +917,41 @@ final class FridgeHomeViewController: UIViewController {
     /// Shows the banner only on the closed home, for eligible free users, when it fits; otherwise removes it.
     private func updateBanner() {
         guard let ads, let bannerContainer else { return }
-        let reserved: CGFloat = bannerContainer.isLoaded ? 0 : Self.expectedBannerHeight
-        let available = closedContainer.bounds.height == 0 ? .greatestFiniteMagnitude : closedContainer.bounds.height - reserved
-        let allowed = ads.eligibility.allows(.closedHomeBanner, on: currentScreen, contentHeightAfterBanner: available)
-        if allowed {
-            bannerContainer.activate(width: footer.bounds.width > 0 ? footer.bounds.width : view.bounds.width - 2 * Theme.Metric.gutter,
-                                     rootViewController: self)
+        let width = footer.bounds.width > 0 ? footer.bounds.width : view.bounds.width - 2 * Theme.Metric.gutter
+        // Height of the closed area without any banner, and what the fridge + dashboard + 裝飾冰箱 need.
+        let withoutBanner = closedContainer.bounds.height == 0 ? .greatestFiniteMagnitude : closedContainer.bounds.height + bannerContainer.loadedHeight
+        let required = requiredClosedContentHeight
+        // Prefer the large banner, fall back to the regular one on short screens, else none — never squeeze the UI.
+        let compact: Bool?
+        if ads.eligibility.allows(.closedHomeBanner, on: currentScreen,
+                                  contentHeightAfterBanner: withoutBanner - bannerContainer.estimateHeight(width, false),
+                                  minimumContentHeight: required) {
+            compact = false
+        } else if ads.eligibility.allows(.closedHomeBanner, on: currentScreen,
+                                         contentHeightAfterBanner: withoutBanner - bannerContainer.estimateHeight(width, true),
+                                         minimumContentHeight: required) {
+            compact = true
+        } else {
+            compact = nil
+        }
+        if let compact {
+            bannerContainer.activate(width: width, rootViewController: self, compact: compact)
         } else {
             // Premium, no consent, other screen, or no room: stop requesting and release the ad view.
             bannerContainer.deactivate()
         }
     }
 
-    /// Conservative height reserved when checking whether a banner fits before it has loaded.
-    static let expectedBannerHeight: CGFloat = 90
+    /// What the closed fridge area needs: the dashboard with 裝飾冰箱 under it (the fridge scales down to fit).
+    private var requiredClosedContentHeight: CGFloat {
+        let width = max(dashboardView.bounds.width, 132)
+        let dashboard = dashboardView.systemLayoutSizeFitting(CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+                                                              withHorizontalFittingPriority: .required,
+                                                              verticalFittingPriority: .fittingSizeLevel).height
+        let decorate = decorateButton.intrinsicContentSize.height
+        // 8pt above the dashboard, 12pt between it and 裝飾冰箱, 8pt below the button (it may leave the fridge's edge).
+        return 8 + dashboard + 12 + decorate + 8
+    }
 
     var isShowingBanner: Bool { bannerContainer?.isLoaded == true && bannerContainer?.isHidden == false }
 

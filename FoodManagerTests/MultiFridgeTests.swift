@@ -410,8 +410,8 @@ final class MultiFridgeIntegrationTests: XCTestCase {
 @MainActor
 final class MonetizationSuspensionTests: XCTestCase {
     // 23, 24, 25
-    func testSuspendedPolicyHidesPaidUIAndNeverCreatesAds() async throws {
-        XCTAssertFalse(MonetizationPolicy.current.isEnabled)
+    func testVersion1PolicyHasAdsButNoPurchases() async throws {
+        XCTAssertEqual(MonetizationPolicy.current, MonetizationPolicy(adsEnabled: true, purchasesEnabled: false))
         let store = MockStoreClient()
         store.entitlements = [StoreTransactionInfo(productID: StoreProducts.premium, isVerified: true, revocationDate: nil)]
         var adsCreated = 0
@@ -419,22 +419,21 @@ final class MonetizationSuspensionTests: XCTestCase {
             adsCreated += 1
             return AdsCoordinator(entitlements: entitlements, consent: FakeConsent(), sdk: FakeAdSDK())
         })
-        XCTAssertNil(services.ads, "no ad coordinator → no SDK start, no requests")
-        XCTAssertEqual(adsCreated, 0)
-        XCTAssertNil(services.entitlementsForUI, "no paid entry points")
+        XCTAssertNotNil(services.ads)
+        XCTAssertEqual(adsCreated, 1)
+        XCTAssertNil(services.entitlementsForUI, "no purchase screens, upgrade rows or paywalls")
         let observer = try XCTUnwrap(services.entitlementObserver, "StoreKit observation keeps running")
         await observer.refresh()
         XCTAssertEqual(observer.purchasedState, .premium, "an existing purchase is preserved and reported truthfully")
 
-        let freeStore = MockStoreClient()
-        let free = MonetizationServices.make(policy: .current, mode: .persistent, store: freeStore)
-        await free.entitlementObserver?.refresh()
-        XCTAssertEqual(free.entitlementObserver?.purchasedState, .free, "free users are never granted Premium")
-
-        let enabled = MonetizationServices.make(policy: MonetizationPolicy(isEnabled: true), mode: .persistent, store: MockStoreClient(),
-                                                makeAds: { AdsCoordinator(entitlements: $0, consent: FakeConsent(), sdk: FakeAdSDK()) })
-        XCTAssertNotNil(enabled.ads, "turning the switch back on restores Phase 4 behaviour")
-        XCTAssertEqual(MonetizationServices.make(policy: .current, mode: .inMemoryForTesting).entitlementObserver == nil, true)
+        let noAds = MonetizationServices.make(policy: MonetizationPolicy(adsEnabled: false, purchasesEnabled: false), mode: .persistent,
+                                              store: MockStoreClient(), makeAds: { _ in XCTFail("no ads"); fatalError() })
+        XCTAssertNil(noAds.ads)
+        let paid = MonetizationServices.make(policy: MonetizationPolicy(adsEnabled: true, purchasesEnabled: true), mode: .persistent,
+                                             store: MockStoreClient(),
+                                             makeAds: { AdsCoordinator(entitlements: $0, consent: FakeConsent(), sdk: FakeAdSDK()) })
+        XCTAssertNotNil(paid.entitlementsForUI, "purchases are a separate decision from ads")
+        XCTAssertNil(MonetizationServices.make(policy: .current, mode: .inMemoryForTesting).entitlementObserver)
     }
 
     func testSettingsAndHomeShowNoPaidEntryPoints() throws {

@@ -57,6 +57,7 @@ final class FakeAdSDK: AdSDKStarting {
 
 @MainActor
 final class FakeBannerLoader: BannerAdLoading {
+    var prefersCompact = false
     var onLoaded: (() -> Void)?
     var onFailed: ((Error) -> Void)?
     private(set) var view: UIView?
@@ -66,7 +67,7 @@ final class FakeBannerLoader: BannerAdLoading {
     func load(width: CGFloat, rootViewController: UIViewController) -> CGSize {
         loadCount += 1
         if view == nil { view = UIView() }
-        return CGSize(width: width, height: 60)
+        return CGSize(width: width, height: prefersCompact ? 50 : 60)
     }
     func destroy() {
         destroyed = true
@@ -261,7 +262,8 @@ final class AdTests: XCTestCase {
         for screen in AppScreen.allCases {
             XCTAssertEqual(AdPlacement.closedHomeBanner.isAllowed(on: screen), screen == .closedHome, "\(screen)")
         }
-        XCTAssertEqual(AdPlacement.allCases, [.closedHomeBanner], "no interstitial / rewarded placements")
+        XCTAssertEqual(AdPlacement.allCases, [.closedHomeBanner, .decorationSavedInterstitial, .manualInterstitial],
+                       "version 1.0: one banner and two interstitials, no rewarded ads")
     }
 
     // 11

@@ -279,18 +279,18 @@ final class MagnetEditorViewController: UIViewController, PHPickerViewController
         board.select(magnet.id)
     }
 
-    private func save() {
+    func save() {
         do {
             try library.commit(draft)
-            onSaved?()
-            dismiss(animated: true)
+            // `onSaved` runs once the editor is gone, so the closed fridge is on screen again.
+            dismiss(animated: true) { [onSaved] in onSaved?() }
         } catch {
             // The draft stays exactly as it is, so the user can retry.
             showAlert(title: "儲存失敗", message: "磁鐵的變更沒有儲存，請再試一次。")
         }
     }
 
-    private func cancel() {
+    func cancel() {
         guard draft.hasChanges || !draft.importedImageIDs.isEmpty else {
             dismiss(animated: true)
             return

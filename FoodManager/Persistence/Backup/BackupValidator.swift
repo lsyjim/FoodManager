@@ -182,7 +182,6 @@ enum BackupValidator {
         guard images.count <= maxMagnetImages else { throw BackupError.tooManyRecords }
         let perFridge = Dictionary(grouping: backup.allMagnets, by: \.fridgeID)
         guard perFridge.values.allSatisfy({ $0.count <= MagnetDraft.maxMagnets }) else { throw BackupError.tooManyRecords }
-        let imageIDs = Set(images.map(\.id))
         for magnet in backup.allMagnets {
             guard fridgeIDs.contains(magnet.fridgeID), MagnetGeometry.isValid(magnet),
                   validDate(magnet.createdAt), validDate(magnet.updatedAt),

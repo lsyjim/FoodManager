@@ -8,6 +8,9 @@ final class BannerAdContainerView: UIView {
     static let retryDelays: [TimeInterval] = [30, 60, 120, 300, 600]
 
     private let makeLoader: () -> BannerAdLoading
+    /// Expected banner height for (width, compact) before loading; lets the screen pick a size that fits.
+    let estimateHeight: (CGFloat, Bool) -> CGFloat
+    private(set) var isCompact = false
     /// Schedules retries; injectable so tests don't wait.
     var scheduleRetry: (TimeInterval, @escaping @MainActor () -> Void) -> Void = { delay, work in
         Task { @MainActor in
@@ -23,8 +26,10 @@ final class BannerAdContainerView: UIView {
     private weak var rootViewController: UIViewController?
     private lazy var heightConstraint = heightAnchor.constraint(equalToConstant: 0)
 
-    init(makeLoader: @escaping () -> BannerAdLoading) {
+    init(makeLoader: @escaping () -> BannerAdLoading,
+         estimateHeight: @escaping (CGFloat, Bool) -> CGFloat = { _, compact in compact ? 50 : 90 }) {
         self.makeLoader = makeLoader
+        self.estimateHeight = estimateHeight
         super.init(frame: .zero)
         heightConstraint.isActive = true
         clipsToBounds = true
@@ -39,10 +44,18 @@ final class BannerAdContainerView: UIView {
     var loadedHeight: CGFloat { isLoaded ? heightConstraint.constant : 0 }
 
     /// Starts (or keeps) a banner of `width`. No-op while a request for the same width is in flight or loaded.
-    func activate(width: CGFloat, rootViewController: UIViewController) {
+    func activate(width: CGFloat, rootViewController: UIViewController, compact: Bool = false) {
         guard width > 0 else { return }
         self.rootViewController = rootViewController
-        if loader != nil && abs(width - requestedWidth) < 1 { return }
+        if loader != nil && abs(width - requestedWidth) < 1 && compact == isCompact { return }
+        if loader != nil && compact != isCompact {
+            // Size class changed: start over with a fresh ad view of the other size.
+            loader?.destroy()
+            loader = nil
+            isLoaded = false
+            collapse()
+        }
+        isCompact = compact
         requestedWidth = width
         load()
     }
@@ -62,6 +75,7 @@ final class BannerAdContainerView: UIView {
     private func load() {
         guard let rootViewController else { return }
         let loader = self.loader ?? makeLoader()
+        loader.prefersCompact = isCompact
         self.loader = loader
         loader.onLoaded = { [weak self] in self?.didLoad() }
         loader.onFailed = { [weak self] _ in self?.didFail() }

@@ -149,6 +149,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = F0D000000000000000000501 /* Build configuration list for PBXNativeTarget "FoodManager" */;
 			buildPhases = (
+				F0D000000000000000000801 /* Check AdMob IDs */,
 				F0D000000000000000000202 /* Sources */,
 				F0D000000000000000000201 /* Frameworks */,
 				F0D000000000000000000203 /* Resources */,
@@ -325,6 +326,25 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		F0D000000000000000000801 /* Check AdMob IDs */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Check AdMob IDs";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Release archives must carry the production AdMob IDs (never Google test IDs or empty values).\nif [ \"$ACTION\" = \"install\" ] && [ \"$CONFIGURATION\" = \"Release\" ]; then\n  for value in \"$ADMOB_APP_ID\" \"$ADMOB_BANNER_UNIT_ID\" \"$ADMOB_INTERSTITIAL_UNIT_ID\"; do\n    case \"$value\" in\n      \"\"|ca-app-pub-3940256099942544*)\n        echo \"error: Release archive needs production AdMob IDs (ADMOB_APP_ID, ADMOB_BANNER_UNIT_ID, ADMOB_INTERSTITIAL_UNIT_ID). Google test IDs are only for Debug.\"\n        exit 1 ;;\n    esac\n  done\nfi\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		F0D000000000000000000202 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -429,6 +449,8 @@
 			buildSettings = {
 				ADMOB_APP_ID = "ca-app-pub-3940256099942544~1458002511";
 				ADMOB_BANNER_UNIT_ID = "ca-app-pub-3940256099942544/2435281174";
+				ADMOB_INTERSTITIAL_UNIT_ID = "ca-app-pub-3940256099942544/4411468910";
+				APP_STORE_ID = "";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Config/FoodManager.entitlements;
@@ -458,8 +480,10 @@
 		F0D000000000000000000412 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ADMOB_APP_ID = "ca-app-pub-3940256099942544~1458002511";
-				ADMOB_BANNER_UNIT_ID = "ca-app-pub-3940256099942544/2435281174";
+				ADMOB_APP_ID = "ca-app-pub-3873309169448072~3121859418";
+				ADMOB_BANNER_UNIT_ID = "ca-app-pub-3873309169448072/4487619812";
+				ADMOB_INTERSTITIAL_UNIT_ID = "ca-app-pub-3873309169448072/7232494815";
+				APP_STORE_ID = "";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Config/FoodManager.entitlements;

@@ -6,6 +6,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private(set) var home: FridgeHomeViewController?
     private lazy var persistence = Self.makePersistence()
     private var currentSession: AppSession?
+    /// Native App Store rating prompt (real data only: tests and UI tests never count usage or ask).
+    private lazy var review: ReviewRequestCoordinator? = persistence.mode == .persistent ? ReviewRequestCoordinator() : nil
+    private var reviewCheck: Task<Void, Never>?
     private lazy var cloudSync: CloudSyncCoordinator = {
         let coordinator = CloudSyncCoordinator()
         coordinator.currentSession = { [weak self] in self?.currentSession }
@@ -28,12 +31,17 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         start()
         window.makeKeyAndVisible()
+        review?.recordLaunch()
+        NotificationCenter.default.addObserver(forName: .foodItemCreated, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.foodWasCreated() }
+        }
         // Cold launch from a widget: delivered once the fridge screen is ready.
         if let url = connectionOptions.urlContexts.first?.url { AppNotificationRouter.shared.handle(url: url) }
     }
 
     /// Refunds, purchases on other devices or Ask-to-Buy approvals may have happened while in the background.
     func sceneWillEnterForeground(_ scene: UIScene) {
+        monetization.ads?.appWillEnterForeground()
         if persistence.mode == .persistent { cloudSync.checkAccount() }
         guard let entitlements = monetization.entitlementObserver else { return }
         Task { await entitlements.refresh() }
@@ -41,6 +49,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// Keeps the local protection copy current (policy A: recoverable after an iCloud sign-out or account change).
     func sceneDidEnterBackground(_ scene: UIScene) {
+        monetization.ads?.appDidEnterBackground()
         if persistence.mode == .persistent { cloudSync.refreshProtectionSnapshot() }
     }
 
@@ -153,6 +162,25 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "好", style: .default))
         home.present(alert, animated: true)
+    }
+
+    /// A food record was saved. Counts it, then — at a calm moment back on the fridge home (editor closed, nothing
+    /// on top, no ad nearby) — lets the coordinator decide whether to ask iOS for the rating prompt. Checks a few
+    /// times while e.g. a continuous-entry editor is still open, then gives up until the next food is added.
+    private func foodWasCreated() {
+        guard let review else { return }
+        review.recordSuccessfulFoodCreation()
+        reviewCheck?.cancel()
+        reviewCheck = Task { @MainActor [weak self] in
+            for _ in 0..<15 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled, let self, let review = self.review else { return }
+                let moment = ReviewMoment(appIsActive: UIApplication.shared.applicationState == .active,
+                                          scene: self.window?.windowScene,
+                                          homeIsIdle: self.home?.canBeRebuilt == true && self.home?.isAdOnScreen == false)
+                if review.considerRequest(moment) != .userBusy { return }
+            }
+        }
     }
 
     /// Production always uses the persistent store. In-memory storage is chosen only explicitly:

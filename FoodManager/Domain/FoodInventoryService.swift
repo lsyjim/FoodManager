@@ -4,6 +4,8 @@ import os
 extension Notification.Name {
     /// Posted (on the main thread) after any successful food mutation so every screen can refresh.
     static let foodInventoryDidChange = Notification.Name("FoodInventoryDidChange")
+    /// A new food record was saved successfully (not posted for edits, restores or failed saves).
+    static let foodItemCreated = Notification.Name("FoodItemCreated")
     /// Posted after the user saves food with an expiration date or storage reminder (contextual
     /// moment to offer notification permission).
     static let foodReminderConfigured = Notification.Name("FoodReminderConfigured")
@@ -188,6 +190,7 @@ final class FoodInventoryService {
                             fridgeID: fridgeID, compartmentID: compartmentID, createdAt: timestamp, updatedAt: timestamp)
         apply(draft, to: &item)
         try persist(item)
+        NotificationCenter.default.post(name: .foodItemCreated, object: self)
         return item
     }
 

@@ -50,6 +50,7 @@ final class GoogleAdSDK: AdSDKStarting {
 /// Large anchored adaptive banner backed by Google's `BannerView`.
 @MainActor
 final class GoogleBannerLoader: NSObject, BannerAdLoading, BannerViewDelegate {
+    var prefersCompact = false
     var onLoaded: (() -> Void)?
     var onFailed: ((Error) -> Void)?
     private var banner: BannerView?
@@ -60,7 +61,7 @@ final class GoogleBannerLoader: NSObject, BannerAdLoading, BannerViewDelegate {
     var view: UIView? { banner }
 
     func load(width: CGFloat, rootViewController: UIViewController) -> CGSize {
-        let size = largeAnchoredAdaptiveBanner(width: width)
+        let size = Self.adSize(width: width, compact: prefersCompact)
         let banner = self.banner ?? BannerView(adSize: size)
         banner.adSize = size
         banner.adUnitID = unitID
@@ -69,6 +70,16 @@ final class GoogleBannerLoader: NSObject, BannerAdLoading, BannerViewDelegate {
         self.banner = banner
         banner.load(Request())
         return size.size
+    }
+
+    static func adSize(width: CGFloat, compact: Bool) -> AdSize {
+        // Short screens: the standard 320×50 banner; otherwise Google's large anchored adaptive size.
+        compact ? AdSizeBanner : largeAnchoredAdaptiveBanner(width: width)
+    }
+
+    /// Height Google will use for a banner of this width (before loading).
+    static func estimatedHeight(width: CGFloat, compact: Bool) -> CGFloat {
+        adSize(width: width, compact: compact).size.height
     }
 
     func destroy() {
@@ -83,5 +94,61 @@ final class GoogleBannerLoader: NSObject, BannerAdLoading, BannerViewDelegate {
 
     nonisolated func bannerView(_ bannerView: BannerView, didFailToReceiveAdWithError error: Error) {
         MainActor.assumeIsolated { onFailed?(error) }
+    }
+}
+
+/// One Google `InterstitialAd`, loaded on demand and used once (Google ads can't be shown twice).
+@MainActor
+final class GoogleInterstitialLoader: NSObject, InterstitialAdLoading, FullScreenContentDelegate {
+    private var ad: InterstitialAd?
+    private var onDismiss: ((Bool) -> Void)?
+    private(set) var isLoading = false
+    private let logger = Logger(subsystem: "FoodManager.HowCode", category: "Ads")
+
+    var isReady: Bool { ad != nil }
+
+    func load(unitID: String, completion: @escaping (Bool) -> Void) {
+        guard !isLoading else { return completion(false) }
+        isLoading = true
+        InterstitialAd.load(with: unitID, request: Request()) { [weak self] ad, error in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.isLoading = false
+                if let error {
+                    // No fill / network / configuration: the app simply carries on without an ad.
+                    self.logger.notice("Interstitial load failed: \(String(describing: error), privacy: .private)")
+                    completion(false)
+                    return
+                }
+                self.ad = ad
+                ad?.fullScreenContentDelegate = self
+                completion(ad != nil)
+            }
+        }
+    }
+
+    func present(from viewController: UIViewController, onDismiss: @escaping (Bool) -> Void) -> Bool {
+        guard let ad else { return false }
+        self.onDismiss = onDismiss
+        ad.present(from: viewController)
+        return true
+    }
+
+    nonisolated func adDidDismissFullScreenContent(_ ad: FullScreenPresentingAd) {
+        MainActor.assumeIsolated { finish(shown: true) }
+    }
+
+    nonisolated func ad(_ ad: FullScreenPresentingAd, didFailToPresentFullScreenContentWithError error: Error) {
+        MainActor.assumeIsolated {
+            logger.notice("Interstitial failed to present: \(String(describing: error), privacy: .private)")
+            finish(shown: false)
+        }
+    }
+
+    private func finish(shown: Bool) {
+        ad = nil // single use
+        let callback = onDismiss
+        onDismiss = nil
+        callback?(shown)
     }
 }

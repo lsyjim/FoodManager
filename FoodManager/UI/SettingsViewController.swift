@@ -7,7 +7,7 @@ final class SettingsViewController: UITableViewController {
         case upgrade, restore, premiumUnlocked, adFree
         case notifications, fridges
         case cloudSync, exportBackup, importBackup
-        case privacyOptions
+        case privacyOptions, watchAd, rateApp
         #if DEBUG
         case devPremium, devAds, devResetConsent, devAdStatus
         #endif
@@ -73,9 +73,12 @@ final class SettingsViewController: UITableViewController {
                                     footer: "iCloud 自動同步會在你自己的裝置之間同步資料。匯出的備份檔是一般可讀的 JSON 文字檔（含磁鐵照片），沒有加密，只會存到你選擇的位置（例如「檔案」或 iCloud 雲碟），也可以分享給使用不同 Apple 帳號的人匯入。匯入備份會取代目前所有資料。",
                                     rows: [.cloudSync, .exportBackup, .importBackup]))
         }
-        if let ads, entitlements?.isPremium == false, ads.privacyOptionsRequired {
-            sections.append(Section(title: "廣告與隱私", footer: "管理廣告個人化與資料使用的同意設定。", rows: [.privacyOptions]))
+        if let ads, ads.eligibility.entitlement != .premium {
+            // The privacy-options entry must stay reachable whenever UMP requires it (independent of purchases).
+            sections.append(Section(title: "廣告", footer: ads.privacyOptionsRequired ? "管理廣告個人化與資料使用的同意設定。" : nil,
+                                    rows: ads.privacyOptionsRequired ? [.watchAd, .privacyOptions] : [.watchAd]))
         }
+        sections.append(Section(title: "關於", footer: nil, rows: [.rateApp]))
         #if DEBUG
         if entitlements != nil {
             sections.append(Section(title: "開發者測試（只在 Xcode 執行的版本出現）",
@@ -141,6 +144,22 @@ final class SettingsViewController: UITableViewController {
             content.image = UIImage(systemName: "square.and.arrow.down")
             cell.accessoryType = .disclosureIndicator
             cell.accessibilityIdentifier = "settings.importBackup"
+        case .rateApp:
+            content.text = "到 App Store 評分"
+            content.secondaryText = "喜歡冰箱管理員嗎？歡迎留下評價"
+            content.image = UIImage(systemName: "star")
+            cell.accessoryType = .disclosureIndicator
+            cell.accessibilityIdentifier = "settings.rateApp"
+        case .watchAd:
+            content.text = "觀看廣告"
+            content.secondaryText = isLoadingAd ? "廣告載入中…" : "手動開啟一則廣告"
+            content.image = UIImage(systemName: "play.rectangle")
+            cell.accessibilityIdentifier = "settings.watchAd"
+            if isLoadingAd {
+                let spinner = UIActivityIndicatorView(style: .medium)
+                spinner.startAnimating()
+                cell.accessoryView = spinner
+            }
         case .privacyOptions:
             content.text = "廣告與隱私設定"
             content.image = UIImage(systemName: "hand.raised")
@@ -203,6 +222,10 @@ final class SettingsViewController: UITableViewController {
             backup?.export(from: self, sourceView: tableView.cellForRow(at: indexPath))
         case .importBackup:
             backup?.pickBackup(from: self)
+        case .watchAd:
+            watchAd()
+        case .rateApp:
+            openAppStoreReview()
         case .privacyOptions:
             guard let ads else { return }
             Task { @MainActor in await ads.presentPrivacyOptions(from: self) }
@@ -228,6 +251,43 @@ final class SettingsViewController: UITableViewController {
         return parts.joined(separator: "・")
     }
     #endif
+
+    /// The App Store review page (a link, never the native prompt — that is decided by the system elsewhere).
+    var reviewURL: URL? = AppStoreReviewLink.configured
+    var openURL: (URL) -> Void = { UIApplication.shared.open($0) }
+
+    func openAppStoreReview() {
+        guard let reviewURL else {
+            let alert = UIAlertController(title: nil, message: "App Store 頁面目前還無法開啟，請稍後再試。謝謝你！", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "好", style: .default))
+            present(alert, animated: true)
+            return
+        }
+        openURL(reviewURL)
+    }
+
+    private var isLoadingAd = false
+
+    /// An ordinary interstitial the user asked for (no reward). Never two at once; nothing else is affected.
+    private func watchAd() {
+        guard let ads, !isLoadingAd else { return }
+        isLoadingAd = true
+        tableView.reloadData()
+        Task { @MainActor in
+            let outcome = await ads.presentManualAd(from: self) { [weak self] in
+                guard let self else { return false }
+                return self.viewIfLoaded?.window != nil && self.presentedViewController == nil
+                    && self.navigationController?.topViewController === self
+            }
+            isLoadingAd = false
+            tableView.reloadData()
+            switch outcome {
+            case .shown: break
+            case .busy: ToastView.show("廣告正在播放中", in: view)
+            case .unavailable: ToastView.show("目前沒有可播放的廣告，請稍後再試", in: view)
+            }
+        }
+    }
 
     private func restore() {
         guard let entitlements else { return }

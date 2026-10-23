@@ -200,6 +200,10 @@ xcodebuild -project FoodManager.xcodeproj -scheme FoodManager -destination 'plat
 - 冰箱、食材、磁鐵都以 UUID 參照，沒有寫死「全部屬於目前使用者」的假設，搬移時不需要改 ID。
 - 隔層配置是一筆 JSON，兩台裝置同時改配置時以後寫入者為準。
 
+## 1.0 發佈準備（Phase 5）
+
+發佈檢查、隱私揭露、後台設定、TestFlight 步驟與 GO / NO-GO 判斷見 [`docs/RELEASE-1.0.md`](docs/RELEASE-1.0.md)。1.0 為免費 App，有廣告（首頁 Banner、裝飾完成插頁、設定頁「觀看廣告」），沒有 App 內購買（`MonetizationPolicy(adsEnabled: true, purchasesEnabled: false)`）。Release archive 必須填入正式 AdMob ID（`ADMOB_APP_ID`、`ADMOB_BANNER_UNIT_ID`、`ADMOB_INTERSTITIAL_UNIT_ID`），否則「Check AdMob IDs」建置階段會讓 archive 失敗。
+
 ## 完整版與廣告（Phase 4，目前暫停）
 
 > **Phase 4.1 起暫停所有付費功能**：`MonetizationPolicy.current.isEnabled = false`。不顯示購買畫面、升級／恢復購買、完整版狀態與開發者付費開關；不啟動廣告 SDK、不請求廣告。StoreKit 程式、產品 ID、`.storekit` 設定檔與使用者既有交易都保留（仍持續監聽與完成交易，不會假造完整版）。日後把這個值改回 `true` 即恢復以下 Phase 4 行為。

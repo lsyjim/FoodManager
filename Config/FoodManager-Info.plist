@@ -15,6 +15,10 @@
 	</array>
 	<key>FMAdMobBannerUnitID</key>
 	<string>$(ADMOB_BANNER_UNIT_ID)</string>
+	<key>FMAdMobInterstitialUnitID</key>
+	<string>$(ADMOB_INTERSTITIAL_UNIT_ID)</string>
+	<key>FMAppStoreID</key>
+	<string>$(APP_STORE_ID)</string>
 	<key>GADApplicationIdentifier</key>
 	<string>$(ADMOB_APP_ID)</string>
 	<key>SKAdNetworkItems</key>
