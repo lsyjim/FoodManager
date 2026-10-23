@@ -19,6 +19,11 @@ extension SharedStore {
         let context = makeContext()
         var report = SharedApplyReport()
         for record in modifications {
+            if let share = record as? CKShare {
+                // The owner's other devices learn the fridge is shared (and its link) from the share records.
+                try applyShare(share, scope: scope, in: context)
+                continue
+            }
             guard let incoming = SharedRecordCoder.decode(record) else {
                 report.ignored += 1
                 continue
@@ -80,6 +85,7 @@ extension SharedStore {
                 row.height = fields.height
                 row.rotation = fields.rotation
                 row.zIndex = fields.zIndex
+                row.imageID = fields.imageID
                 row.imageData = fields.imageData
                 row.createdAt = fields.createdAt
                 row.updatedAt = fields.updatedAt
@@ -118,6 +124,18 @@ extension SharedStore {
         return report
     }
 
+    private func applyShare(_ share: CKShare, scope: SharedDatabaseScope, in context: ModelContext) throws {
+        guard scope == .private, let zone = SharedZone.parse(share.recordID.zoneID),
+              let fridge = try fetchFridge(zone.fridgeID, in: context), fridge.role == .owner else { return }
+        switch zone.kind {
+        case .inventory:
+            fridge.isShared = true
+            fridge.inventoryShareURL = share.url?.absoluteString
+        case .structure:
+            fridge.structureShareURL = share.url?.absoluteString
+        }
+    }
+
     /// A shared zone disappeared (owner stopped sharing, removed this member, or deleted it).
     func zoneWasDeleted(_ zoneID: CKRecordZone.ID, scope: SharedDatabaseScope) throws {
         guard let zone = SharedZone.parse(zoneID) else { return }
@@ -150,7 +168,7 @@ extension SharedStore {
                                             builtInAssetID: magnet.builtInAssetID, styleRaw: magnet.styleRaw,
                                             centerX: magnet.centerX, centerY: magnet.centerY, width: magnet.width,
                                             height: magnet.height, rotation: magnet.rotation, zIndex: magnet.zIndex,
-                                            imageData: magnet.imageData, createdAt: magnet.createdAt, updatedAt: magnet.updatedAt)
+                                            imageID: magnet.imageID, imageData: magnet.imageData, createdAt: magnet.createdAt, updatedAt: magnet.updatedAt)
             return SharedRecordCoder.encode(fields, ownerName: ownerName, imageFileURL: magnet.imageData.flatMap { imageFileURL(magnet.id, $0) },
                                             systemFields: magnet.systemFields)
         case .inventory:

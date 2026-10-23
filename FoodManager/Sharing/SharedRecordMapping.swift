@@ -95,6 +95,7 @@ struct SharedMagnetFields: Equatable {
     var height: Double
     var rotation: Double
     var zIndex: Int
+    var imageID: UUID?
     var imageData: Data?
     var createdAt: Date
     var updatedAt: Date
@@ -160,7 +161,8 @@ enum SharedRecordCoder {
             let fields = SharedMagnetFields(id: id, fridgeID: fridgeID, sourceRaw: sourceRaw,
                                             builtInAssetID: record["builtInAssetID"] as? String, styleRaw: record["style"] as? String,
                                             centerX: centerX, centerY: centerY, width: width, height: height, rotation: rotation,
-                                            zIndex: zIndex, imageData: imageData, createdAt: createdAt, updatedAt: updatedAt)
+                                            zIndex: zIndex,
+                                            imageID: (record["imageID"] as? String).flatMap(UUID.init(uuidString:)), imageData: imageData, createdAt: createdAt, updatedAt: updatedAt)
             return isValidMagnet(fields) ? .magnet(fields) : nil
         default:
             return nil
@@ -228,6 +230,7 @@ enum SharedRecordCoder {
         record["height"] = fields.height
         record["rotation"] = fields.rotation
         record["zIndex"] = NSNumber(value: fields.zIndex)
+        record["imageID"] = fields.imageID?.uuidString
         record["image"] = imageFileURL.map(CKAsset.init(fileURL:))
         record["createdAt"] = fields.createdAt
         record["updatedAt"] = fields.updatedAt
@@ -286,7 +289,7 @@ enum SharedRecordCoder {
         return MagnetGeometry.centerRange.contains(magnet.centerX) && MagnetGeometry.centerRange.contains(magnet.centerY)
             && magnet.width >= MagnetGeometry.minWidth - tolerance && magnet.width <= MagnetGeometry.maxWidth + tolerance
             && magnet.height > 0 && magnet.height <= 3 && abs(magnet.rotation) <= .pi + tolerance
-            && (source == .builtIn ? magnet.builtInAssetID?.isEmpty == false : magnet.imageData != nil)
+            && (source == .builtIn ? magnet.builtInAssetID?.isEmpty == false : magnet.imageID != nil && magnet.imageData != nil)
     }
 
     private static func isValidDate(_ date: Date) -> Bool {

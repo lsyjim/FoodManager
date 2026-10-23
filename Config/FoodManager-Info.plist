@@ -13,6 +13,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>CKSharingSupported</key>
+	<true/>
 	<key>FMAdMobBannerUnitID</key>
 	<string>$(ADMOB_BANNER_UNIT_ID)</string>
 	<key>FMAdMobInterstitialUnitID</key>

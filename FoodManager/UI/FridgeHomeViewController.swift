@@ -14,6 +14,8 @@ final class FridgeHomeViewController: UIViewController {
     /// The argument is nil on success, else the failure message to show.
     var onDataRestored: ((String?) -> Void)?
     private let makeBackupService: () -> BackupService
+    /// Shared refrigerators (nil while sharing is off: no labels, no entry points).
+    private let sharing: SharingService?
     private let magnetLibrary: MagnetLibrary
     /// Magnets on the closed door: display only, so taps still open the fridge.
     private lazy var magnetBoard = MagnetBoardView(template: template, library: magnetLibrary)
@@ -123,6 +125,7 @@ final class FridgeHomeViewController: UIViewController {
         directory = session.directory
         foodStore = session.foodStore
         makeBackupService = { session.makeBackupService() }
+        sharing = session.sharing
         magnetLibrary = session.magnets
         fridge = session.loadResult.fridge
         layoutRecovery = session.loadResult.recovery
@@ -844,11 +847,13 @@ final class FridgeHomeViewController: UIViewController {
 
     func fridgeMenuElements() -> [UIMenuElement] {
         let fridges = directory.fridges.map { fridge in
-            UIAction(title: fridge.name, image: UIImage(systemName: "refrigerator"),
-                     state: fridge.id == self.fridge.id ? .on : .off) { [weak self] _ in
+            let action = UIAction(title: fridge.name, image: UIImage(systemName: "refrigerator"),
+                                  state: fridge.id == self.fridge.id ? .on : .off) { [weak self] _ in
                 guard let self, fridge.id != self.fridge.id else { return }
                 self.switchFridge(to: fridge.id, then: nil)
             }
+            action.subtitle = sharing?.ownership(of: fridge.id).selectorLabel
+            return action
         }
         let add = UIAction(title: "新增冰箱", image: UIImage(systemName: "plus")) { [weak self] _ in self?.addFridge() }
         if !directory.canAddFridge {
@@ -871,7 +876,8 @@ final class FridgeHomeViewController: UIViewController {
 
     func makeFridgeManagement() -> UIViewController? {
         FridgeManagementViewController(directory: directory, currentFridgeID: { [weak self] in self?.fridge.id ?? UUID() },
-                                       onSelect: { [weak self] id in self?.switchFridge(to: id, then: nil) })
+                                       onSelect: { [weak self] id in self?.switchFridge(to: id, then: nil) },
+                                       sharing: sharing, makeBackupService: makeBackupService)
     }
 
     /// Hands over to the scene delegate, which shows the chosen fridge (its own layout, door state and food)

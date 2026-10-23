@@ -20,6 +20,9 @@ final class SharedFridgeRecord {
     /// Zone owner (`CKCurrentUserDefaultName` for the owner's own fridges).
     var zoneOwnerName: String = ""
     var isShared: Bool = false
+    /// Owner only: the invitation link (inventory share) and the read-only structure share. Never logged.
+    var inventoryShareURL: String?
+    var structureShareURL: String?
     var name: String = ""
     var templateID: String = ""
     var layoutData: Data = Data()
@@ -131,6 +134,8 @@ final class SharedMagnetRecord {
     var height: Double = 0.3
     var rotation: Double = 0
     var zIndex: Int = 0
+    /// Photo magnets: the image ID used by `MagnetImageStore` (several magnets may show the same photo).
+    var imageID: UUID?
     /// Photo bytes (uploaded as a CKAsset).
     @Attribute(.externalStorage) var imageData: Data?
     var createdAt: Date = Date.now
@@ -279,4 +284,18 @@ struct SharedFridgeSummary: Equatable {
 enum SharedStoreError: Error, Equatable {
     case notFound
     case invalidQuantity
+    /// Only the owner may change a shared fridge's name, compartments or magnets.
+    case ownerOnly
+    case alreadyShared
+    /// A photo magnet's bytes aren't on this device (yet).
+    case photoMissing
+
+    var message: String {
+        switch self {
+        case .ownerOnly: return "只有冰箱主人可以修改冰箱名稱、隔層與磁鐵。"
+        case .photoMissing: return "有磁鐵照片還沒下載完成，請稍後再試。"
+        case .alreadyShared: return "這台冰箱已經共享。"
+        case .notFound, .invalidQuantity: return "無法儲存，請再試一次。"
+        }
+    }
 }

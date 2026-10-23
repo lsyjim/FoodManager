@@ -1,3 +1,5 @@
+import CloudKit
+import SwiftData
 import UIKit
 
 /// Composition root: opens storage, then shows either the fridge or the recoverable storage-error screen.
@@ -17,6 +19,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         coordinator.presentAccountNotice = { [weak self] in self?.presentAccountNoticeIfNeeded() }
         return coordinator
     }()
+    /// Shared refrigerators (Phase 5D): only while `SharingPolicy` is active and iCloud sync runs. Release 1.0 never
+    /// creates them.
+    private var sharedEngine: SharedSyncEngine?
+    private var sharedInventory: SharedInventory?
     /// Built once from `MonetizationPolicy` (survives storage retries and fridge switches).
     private lazy var monetization = MonetizationServices.make(policy: .current, mode: persistence.mode)
 
@@ -59,9 +65,16 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         AppNotificationRouter.shared.handle(url: url)
     }
 
+    /// Someone opened a shared-fridge link. Ignored entirely while sharing is off (never accepted, no paywall);
+    /// requesting access as a participant arrives in Phase 5D-4.
+    func windowScene(_ windowScene: UIWindowScene, userDidAcceptCloudKitShareWith metadata: CKShare.Metadata) {
+        guard SharingPolicy.current.joinGate == .allowed, currentSession?.sharing != nil else { return }
+        home?.showMessage("這個版本還不能加入共享冰箱。")
+    }
+
     /// (Re)attempts to open storage. Called at launch and by the error screen's retry button.
     private func start() {
-        switch AppBootstrap.start(persistence) {
+        switch AppBootstrap.start(persistence, sharing: { [weak self] in self?.makeSharing(container: $0) }) {
         case let .success(session):
             show(session)
             if persistence.mode == .persistent {
@@ -109,7 +122,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// A restore replaced the stored data: rebuild everything (fresh contexts on the same container, never a
     /// second one), so no screen keeps showing old data. Then reschedule notifications and refresh widgets.
     private func reloadAfterRestore(from session: AppSession, failure: String?) {
-        switch AppBootstrap.makeSession(container: session.container, mode: session.mode, selection: session.selection) {
+        switch AppBootstrap.makeSession(container: session.container, mode: session.mode, selection: session.selection,
+                                         sharing: session.sharing) {
         case let .success(restored):
             show(restored, animated: true)
             guard let home else { return }
@@ -137,7 +151,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// schedule and the widget snapshots reflect them. Only called while the user isn't in the middle of something.
     private func reloadAfterCloudImport(from session: AppSession) {
         guard case let .success(updated) = AppBootstrap.makeSession(container: session.container, mode: session.mode,
-                                                                    selection: session.selection) else { return }
+                                                                    selection: session.selection, sharing: session.sharing) else { return }
         show(updated)
     }
 
@@ -145,11 +159,38 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// two containers never mirror the same store.
     private func reopenStorage() {
         cloudSync.stop()
+        sharedEngine = nil
+        sharedInventory = nil
         window?.rootViewController = UIViewController()
         home = nil
         currentSession = nil
         persistence = Self.makePersistence()
         start()
+    }
+
+    /// The shared-fridge pipeline for an opened container, or nil (sharing off, tests, or iCloud sync not running).
+    private func makeSharing(container: ModelContainer) -> SharingService? {
+        let policy = SharingPolicy.current
+        guard persistence.isCloudActive else { return nil }
+        if sharedEngine == nil {
+            sharedEngine = SharedSyncEngine.make(policy: policy, mode: persistence.mode, cloudSyncEnabled: CloudSyncSettings.shared.isEnabled)
+            sharedEngine?.onChange = { [weak self] in self?.sharedDataChanged() }
+            sharedEngine?.start()
+        }
+        guard let engine = sharedEngine else { return nil }
+        let inventory = sharedInventory ?? SharedInventory(store: engine.store)
+        inventory.onLocalChange = { [weak engine] change in engine?.enqueue(change) }
+        sharedInventory = inventory
+        return SharingService(policy: policy, inventory: inventory, cloud: CloudKitSharingCloud(engine: engine),
+                              personal: SwiftDataFridgeStore(container: container),
+                              hasPremium: { [weak self] in self?.monetization.entitlementObserver?.isPremium ?? false },
+                              snapshots: .shared)
+    }
+
+    /// Shared-fridge changes arrived: rebuild like after an iCloud import, at a calm moment only.
+    private func sharedDataChanged() {
+        guard let session = currentSession, home?.canBeRebuilt == true else { return }
+        reloadAfterCloudImport(from: session)
     }
 
     /// Policy A: after an iCloud account change the data shown belongs to the new account. Explain once where the

@@ -111,6 +111,23 @@ final class SwiftDataFridgeStore: FridgeStore {
         return [FridgeLoadResult(fridge: fridge, recovery: .none)]
     }
 
+    /// Stored fridges only (never creates the default one). Used when shared fridges exist.
+    func loadExisting() throws -> [FridgeLoadResult] {
+        SyncedRecords.unique(try makeContext().fetch(FetchDescriptor<FridgeRecord>(sortBy: [SortDescriptor(\.createdAt)])))
+            .map(fridge(from:))
+    }
+
+    /// After a fridge became shared (its copy in the shared store is confirmed by the server): removes every
+    /// personal row of it — fridge, food and history, magnets and photos only it used — in one save.
+    func removeFridgeAfterSharing(_ fridgeID: UUID) throws {
+        let context = makeContext()
+        let records = try fetchRecords(id: fridgeID, in: context)
+        try context.fetch(FetchDescriptor<FoodItemRecord>(predicate: #Predicate { $0.fridgeID == fridgeID })).forEach(context.delete)
+        try MagnetRecordCleanup.deleteMagnets(ofFridge: fridgeID, in: context)
+        for record in records { context.delete(record) }
+        try save(context)
+    }
+
     func create(_ fridge: Fridge) throws {
         let errors = FridgeLayoutEngine.validate(fridge)
         guard errors.isEmpty else { throw FridgeStoreError.invalidLayout(errors) }

@@ -102,11 +102,17 @@ final class FridgeManagementViewController: UITableViewController {
     private let currentFridgeID: () -> UUID
     /// Switches the app to a fridge (rebuilds the home screen).
     private let onSelect: (UUID) -> Void
+    /// nil while shared fridges are off (no sharing rows or labels at all).
+    private let sharing: SharingService?
+    private let makeBackupService: (() -> BackupService)?
 
-    init(directory: FridgeDirectory, currentFridgeID: @escaping () -> UUID, onSelect: @escaping (UUID) -> Void) {
+    init(directory: FridgeDirectory, currentFridgeID: @escaping () -> UUID, onSelect: @escaping (UUID) -> Void,
+         sharing: SharingService? = nil, makeBackupService: (() -> BackupService)? = nil) {
         self.directory = directory
         self.currentFridgeID = currentFridgeID
         self.onSelect = onSelect
+        self.sharing = sharing
+        self.makeBackupService = makeBackupService
         super.init(style: .insetGrouped)
     }
 
@@ -236,7 +242,8 @@ final class FridgeManagementViewController: UITableViewController {
             let fridge = directory.fridges[indexPath.row]
             let foodCount = (try? directory.foodStore.activeItems(fridgeID: fridge.id).count).map { "\($0) 項食材" } ?? "—"
             content.text = fridge.name
-            content.secondaryText = "\(fridge.allCompartments.count) 個隔層 · \(foodCount)"
+            content.secondaryText = ([sharing?.ownership(of: fridge.id).selectorLabel].compactMap { $0 }
+                                     + ["\(fridge.allCompartments.count) 個隔層", foodCount]).joined(separator: " · ")
             content.image = UIImage(named: "fridge_closed")
             content.imageProperties.maximumSize = CGSize(width: 28, height: 40)
             cell.accessoryType = fridge.id == currentFridgeID() ? .checkmark : .none
@@ -267,11 +274,24 @@ final class FridgeManagementViewController: UITableViewController {
         if fridge.id != currentFridgeID() {
             sheet.addAction(UIAlertAction(title: "切換到這台冰箱", style: .default) { [weak self] _ in self?.onSelect(fridge.id) })
         }
-        sheet.addAction(UIAlertAction(title: "重新命名", style: .default) { [weak self] _ in
-            guard let self else { return }
-            FridgeActions.presentRename(fridge, directory: self.directory, from: self) { [weak self] in self?.reload() }
-        })
-        if directory.fridges.count > 1 {
+        let ownership = sharing?.ownership(of: fridge.id) ?? .personalOwned
+        let isOwner = ownership == .personalOwned || ownership == .sharedOwned
+        if let sharing, ownership == .sharedOwned, let url = sharing.invitationURL(for: fridge.id) {
+            sheet.addAction(UIAlertAction(title: "分享邀請連結", style: .default) { [weak self] _ in
+                self?.presentInvitation(url, fridgeName: fridge.name, at: indexPath)
+            })
+        } else if let sharing, sharing.canOfferSharing(fridge.id) {
+            sheet.addAction(UIAlertAction(title: "共享這台冰箱", style: .default) { [weak self] _ in
+                self?.confirmSharing(fridge, at: indexPath)
+            })
+        }
+        if isOwner {
+            sheet.addAction(UIAlertAction(title: "重新命名", style: .default) { [weak self] _ in
+                guard let self else { return }
+                FridgeActions.presentRename(fridge, directory: self.directory, from: self) { [weak self] in self?.reload() }
+            })
+        }
+        if directory.fridges.count > 1 && ownership == .personalOwned {
             sheet.addAction(UIAlertAction(title: "刪除冰箱", style: .destructive) { [weak self] _ in
                 guard let self else { return }
                 FridgeActions.presentDelete(fridge, directory: self.directory, from: self) { [weak self] remaining in
@@ -283,5 +303,54 @@ final class FridgeManagementViewController: UITableViewController {
         sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
         sheet.popoverPresentationController?.sourceView = tableView.cellForRow(at: indexPath)
         present(sheet, animated: true)
+    }
+
+    // MARK: - Sharing (Phase 5D)
+
+    private func confirmSharing(_ fridge: Fridge, at indexPath: IndexPath) {
+        guard let sharing else { return }
+        switch sharing.startGate {
+        case .allowed: break
+        case .disabled: return
+        case let gate: return FoodActions.showError(SharingServiceError.notAllowed(gate).message, on: self)
+        }
+        let alert = UIAlertController(
+            title: "共享「\(fridge.name)」？",
+            message: "會產生一個邀請連結，可以用 LINE 等方式傳給家人。對方開啟後要先送出申請，經你同意才看得到冰箱內容；只拿到連結的人看不到任何資料。\n成員可以新增和編輯食材，冰箱名稱、隔層與磁鐵只有你能修改。開始前會先在這台裝置保留一份保護副本。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "開始共享", style: .default) { [weak self] _ in self?.startSharing(fridge, at: indexPath) })
+        present(alert, animated: true)
+    }
+
+    private func startSharing(_ fridge: Fridge, at indexPath: IndexPath) {
+        guard let sharing, let makeBackupService else { return }
+        let progress = UIAlertController(title: "正在共享…", message: "正在上傳到 iCloud，請稍候。", preferredStyle: .alert)
+        present(progress, animated: true)
+        Task { @MainActor [weak self] in
+            do {
+                let url = try await sharing.share(fridgeID: fridge.id, backups: makeBackupService())
+                progress.dismiss(animated: true) {
+                    guard let self else { return }
+                    self.reload()
+                    self.presentInvitation(url, fridgeName: fridge.name, at: indexPath)
+                }
+            } catch {
+                let message = (error as? SharingServiceError)?.message ?? (error as? BackupError)?.message
+                    ?? (error as? SharedStoreError)?.message ?? "共享沒有完成，冰箱沒有變更。請再試一次。"
+                progress.dismiss(animated: true) {
+                    guard let self else { return }
+                    FoodActions.showError(message, on: self)
+                }
+            }
+        }
+    }
+
+    /// System share sheet (LINE, Messages, Mail…). The link alone grants nothing: recipients must request access.
+    private func presentInvitation(_ url: URL, fridgeName: String, at indexPath: IndexPath) {
+        let text = "邀請你一起管理「\(fridgeName)」冰箱。開啟連結後送出申請，我同意後就能加入："
+        let activity = UIActivityViewController(activityItems: [text, url], applicationActivities: nil)
+        activity.popoverPresentationController?.sourceView = tableView.cellForRow(at: indexPath) ?? view
+        present(activity, animated: true)
     }
 }

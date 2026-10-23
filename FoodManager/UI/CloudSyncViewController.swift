@@ -130,6 +130,7 @@ final class CloudSyncViewController: UITableViewController {
         case .preCloud: return "開啟 iCloud 同步前的資料"
         case let .account(hash): return hash == settings.accountFingerprint ? "目前 iCloud 帳號的資料" : "先前 iCloud 帳號的資料"
         case .local: return "未登入 iCloud 時的資料"
+        case .beforeSharing: return "開始共享冰箱前的資料"
         }
     }
 

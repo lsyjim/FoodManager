@@ -13,6 +13,8 @@ final class ProtectionSnapshots {
             case account(String)
             /// Kept up to date while no iCloud account was available.
             case local
+            /// Taken right before a fridge is turned into a shared fridge (Phase 5D).
+            case beforeSharing
         }
 
         let kind: Kind
@@ -27,6 +29,7 @@ final class ProtectionSnapshots {
     }
 
     static let preCloudFileName = "PreCloud-Backup.json"
+    static let beforeSharingFileName = "BeforeSharing-Backup.json"
     let directory: URL
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "CloudSync")
 
@@ -37,6 +40,7 @@ final class ProtectionSnapshots {
         case .preCloud: return directory.appendingPathComponent(Self.preCloudFileName)
         case let .account(hash): return directory.appendingPathComponent("Account-\(hash).json")
         case .local: return directory.appendingPathComponent("Local.json")
+        case .beforeSharing: return directory.appendingPathComponent(Self.beforeSharingFileName)
         }
     }
 
@@ -48,6 +52,8 @@ final class ProtectionSnapshots {
             let kind: Snapshot.Kind
             if url.lastPathComponent == Self.preCloudFileName {
                 kind = .preCloud
+            } else if url.lastPathComponent == Self.beforeSharingFileName {
+                kind = .beforeSharing
             } else if name.hasPrefix("Account-") {
                 kind = .account(String(name.dropFirst("Account-".count)))
             } else if name == "Local" {

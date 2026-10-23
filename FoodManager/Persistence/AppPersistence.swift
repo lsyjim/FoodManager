@@ -99,12 +99,15 @@ struct AppSession {
     let container: ModelContainer
     let selection: FridgeSelectionStore
     let magnets: MagnetLibrary
+    /// Shared refrigerators (nil unless `SharingPolicy` is active and iCloud sync runs).
+    var sharing: SharingService? = nil
 
     /// Same storage, another fridge (re-reads stored fridges so door states and layouts are current).
     func selecting(_ fridgeID: UUID) throws -> AppSession {
         try directory.select(fridgeID)
         return AppSession(fridgeStore: fridgeStore, foodStore: foodStore, loadResult: directory.selected,
-                          mode: mode, directory: directory, container: container, selection: selection, magnets: magnets)
+                          mode: mode, directory: directory, container: container, selection: selection, magnets: magnets,
+                          sharing: sharing)
     }
 
     /// Backup service over this session's storage and preferences.
@@ -118,31 +121,49 @@ struct AppSession {
 
 enum AppBootstrap {
     /// Opens storage and loads the fridge. Any failure is returned instead of being papered over.
-    static func start(_ persistence: AppPersistence) -> Result<AppSession, Error> {
+    /// `sharing` is built for the opened container (nil while shared fridges are off).
+    static func start(_ persistence: AppPersistence,
+                      sharing: (ModelContainer) -> SharingService? = { _ in nil }) -> Result<AppSession, Error> {
         switch persistence.open() {
         case let .unavailable(error):
             return .failure(error)
         case let .available(container, mode):
             // Tests and UI tests keep their selection in memory, never in the user's preferences.
             let selection: FridgeSelectionStore = mode == .persistent ? UserDefaultsFridgeSelectionStore() : InMemoryFridgeSelectionStore()
-            return makeSession(container: container, mode: mode, selection: selection)
+            return makeSession(container: container, mode: mode, selection: selection, sharing: sharing(container))
         }
     }
 
     /// Fresh stores (fresh contexts, nothing cached) over an already open container. Used at launch and after a restore.
-    static func makeSession(container: ModelContainer, mode: PersistenceMode, selection: FridgeSelectionStore) -> Result<AppSession, Error> {
+    /// With `sharing`, shared fridges join the personal ones through the routing stores.
+    static func makeSession(container: ModelContainer, mode: PersistenceMode, selection: FridgeSelectionStore,
+                            sharing: SharingService? = nil) -> Result<AppSession, Error> {
         // Settle anything iCloud delivered since the last launch (never assigns or deletes user data on its own).
         _ = try? SyncReconciler(container: container).run()
-        let fridgeStore = SwiftDataFridgeStore(container: container)
-        let foodStore = SwiftDataFoodStore(container: container)
+        let personalFridges = SwiftDataFridgeStore(container: container)
+        let personalFood = SwiftDataFoodStore(container: container)
+        let personalMagnets = SwiftDataMagnetStore(container: container)
+        let fridgeStore: FridgeStore
+        let foodStore: FoodStore
+        let magnetStore: MagnetStore
+        if let shared = sharing?.inventory {
+            sharing?.finishPendingRemovals()
+            fridgeStore = RoutingFridgeStore(personal: personalFridges, shared: shared)
+            foodStore = RoutingFoodStore(personal: personalFood, shared: shared)
+            magnetStore = RoutingMagnetStore(personal: personalMagnets, shared: shared)
+        } else {
+            fridgeStore = personalFridges
+            foodStore = personalFood
+            magnetStore = personalMagnets
+        }
         do {
             let directory = try FridgeDirectory(fridgeStore: fridgeStore, foodStore: foodStore, selection: selection)
             let imageDirectory = MagnetImageStore.directory(for: container)
-            let magnets = MagnetLibrary(store: SwiftDataMagnetStore(container: container), images: MagnetImageStore(directory: imageDirectory))
+            let magnets = MagnetLibrary(store: magnetStore, images: MagnetImageStore(directory: imageDirectory))
             directory.onFridgeDeleted = { magnets.removeUnreferencedImages() }
             return .success(AppSession(fridgeStore: fridgeStore, foodStore: foodStore, loadResult: directory.selected,
                                        mode: mode, directory: directory, container: container, selection: selection,
-                                       magnets: magnets))
+                                       magnets: magnets, sharing: sharing))
         } catch {
             Logger(subsystem: "FoodManager.HowCode", category: "Persistence")
                 .error("Fridge load failed: \(String(describing: error), privacy: .private)")

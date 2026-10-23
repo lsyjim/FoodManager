@@ -47,6 +47,30 @@ final class SharedSyncEngine: CKSyncEngineDelegate, @unchecked Sendable {
         ])
     }
 
+    /// Owner: removes both zones (rolling back a conversion that didn't complete).
+    func queueZoneDeletion(for fridgeID: UUID) {
+        engines[.private]?.state.add(pendingDatabaseChanges: [
+            .deleteZone(SharedZone.id(fridgeID: fridgeID, kind: .structure)),
+            .deleteZone(SharedZone.id(fridgeID: fridgeID, kind: .inventory))
+        ])
+    }
+
+    /// Feeds local edits from `SharedInventory` to the right engine.
+    func enqueue(_ change: SharedInventory.Change) {
+        queueDelete(change.deletes, scope: change.scope)
+        queueSave(change.saves, scope: change.scope)
+    }
+
+    var isRunning: Bool { !engines.isEmpty }
+
+    /// Sends pending changes of one database now (and waits for the server's answer).
+    func sendChanges(scope: SharedDatabaseScope) async throws {
+        guard let engine = engines[scope] else { throw SharingServiceError.syncUnavailable }
+        try await engine.sendChanges()
+    }
+
+    var privateDatabase: CKDatabase { container.privateCloudDatabase }
+
     func queueSave(_ recordIDs: [CKRecord.ID], scope: SharedDatabaseScope) {
         engines[scope]?.state.add(pendingRecordZoneChanges: recordIDs.map { .saveRecord($0) })
     }
@@ -95,7 +119,7 @@ final class SharedSyncEngine: CKSyncEngineDelegate, @unchecked Sendable {
                 let report = try store.apply(modifications: changes.modifications.map(\.record),
                                              deletions: changes.deletions.map { ($0.recordID, $0.recordType) }, scope: scope)
                 if report.ignored > 0 { logger.notice("Ignored \(report.ignored) invalid shared record(s)") }
-                notifyChange()
+                if report.applied + report.deleted > 0 || !changes.modifications.isEmpty { notifyChange() }
 
             case let .sentRecordZoneChanges(sent):
                 for record in sent.savedRecords { try store.didSave(record) }
