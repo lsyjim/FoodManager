@@ -27,6 +27,12 @@ enum BackupError: Error, Equatable {
     case insufficientStorage
     /// Restoring failed after the database changed; `rolledBack` says whether the previous data is back.
     case restoreFailed(rolledBack: Bool)
+    /// Export: every fridge is a shared one, and shared fridges are never part of a backup file.
+    case onlySharedFridges
+    /// Restore: the backup contains a fridge that is now a shared fridge (it can't be overwritten from a file).
+    case sharedFridgeConflict(String)
+    /// Restore: the backup's fridges plus the shared ones would exceed the limit.
+    case sharedLimit(sharedCount: Int)
 
     var message: String {
         switch self {
@@ -54,6 +60,12 @@ enum BackupError: Error, Equatable {
         case .insufficientStorage: return "儲存空間不足，無法建立備份檔。"
         case let .restoreFailed(rolledBack):
             return rolledBack ? "還原沒有完成，已恢復成還原前的資料。" : "還原沒有完成，且無法自動恢復；還原前的保護副本已保存在 App 中。"
+        case .onlySharedFridges:
+            return "目前只有共享冰箱。共享冰箱的資料保存在 iCloud 共享中，不會放進備份檔。"
+        case let .sharedFridgeConflict(name):
+            return "備份中的「\(name)」目前是共享冰箱，共享冰箱不能用備份檔覆蓋，沒有進行還原。"
+        case let .sharedLimit(sharedCount):
+            return "你目前有 \(sharedCount) 台共享冰箱（含等待同意），加上備份裡的冰箱會超過 \(FridgePolicy.maxRefrigerators) 台，沒有進行還原。"
         }
     }
 }

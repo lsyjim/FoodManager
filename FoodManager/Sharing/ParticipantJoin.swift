@@ -143,6 +143,13 @@ extension SharingService {
         return waiting + fridges
     }
 
+    /// What backups must leave alone: every shared fridge, and the slots shared fridges and requests hold.
+    func backupExclusion() -> SharedFridgeExclusion {
+        let fridges = (try? inventory.store.fridges()) ?? []
+        return SharedFridgeExclusion(fridgeIDs: Set(fridges.map(\.id)),
+                                     reservedSlots: FridgePolicy.fridgeCount(personal: 0, shared: fridges.map(\.ownership)) + invitations().count)
+    }
+
     /// A member leaves: their access ends on the server first, then the local copy is removed.
     func leave(fridgeID: UUID) async throws {
         guard inventory.role(of: fridgeID) == .participant, let summary = try inventory.store.fridges().first(where: { $0.id == fridgeID }) else {

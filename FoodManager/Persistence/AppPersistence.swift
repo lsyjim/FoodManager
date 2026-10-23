@@ -112,10 +112,12 @@ struct AppSession {
 
     /// Backup service over this session's storage and preferences.
     func makeBackupService(defaults: UserDefaults = .standard) -> BackupService {
-        BackupService(inventory: SwiftDataInventoryBackupStore(container: container),
-                      preferences: UserDefaultsPreferencesBackupStore(defaults: defaults, selection: selection),
-                      magnetImages: magnets.images,
-                      recoveryDirectory: mode == .persistent ? BackupService.defaultRecoveryDirectory : nil)
+        let service = BackupService(inventory: SwiftDataInventoryBackupStore(container: container),
+                                    preferences: UserDefaultsPreferencesBackupStore(defaults: defaults, selection: selection),
+                                    magnetImages: magnets.images,
+                                    recoveryDirectory: mode == .persistent ? BackupService.defaultRecoveryDirectory : nil)
+        if let sharing { service.sharedFridges = { sharing.backupExclusion() } }
+        return service
     }
 }
 

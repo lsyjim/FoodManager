@@ -1,6 +1,15 @@
 import Foundation
 import os
 
+/// Shared refrigerators (Phase 5D) live outside backups: never exported, never replaced by a restore.
+struct SharedFridgeExclusion: Equatable {
+    var fridgeIDs: Set<UUID>
+    /// Shared fridges that count toward the limit, plus access requests waiting for approval.
+    var reservedSlots: Int
+
+    static let none = SharedFridgeExclusion(fridgeIDs: [], reservedSlots: 0)
+}
+
 /// Export, import and full-replacement restore of the user's data.
 ///
 /// Atomicity: fridges and food live in SwiftData and are replaced in a single `ModelContext.save()`, which is
@@ -20,6 +29,8 @@ final class BackupService {
     private let applicationVersion: String
     private let fileManager = FileManager.default
     private let logger = Logger(subsystem: "FoodManager.HowCode", category: "Backup")
+    /// Shared fridges on this device (a backup only ever covers personal fridges).
+    var sharedFridges: () -> SharedFridgeExclusion = { .none }
 
     static let recoveryFileName = "PreRestore-Backup.json"
 
@@ -59,8 +70,25 @@ final class BackupService {
     /// blank card in the same place — e.g. while a photo is still downloading from iCloud.
     func makeBackup(allowMissingPhotos: Bool = false) throws -> FoodManagerBackup {
         let backup = try currentBackup(requireImages: !allowMissingPhotos)
-        try BackupValidator.validate(backup)
+        do {
+            try BackupValidator.validate(backup)
+        } catch BackupError.noFridges where !sharedFridges().fridgeIDs.isEmpty {
+            throw BackupError.onlySharedFridges
+        }
         return backup
+    }
+
+    /// Whether a validated backup may replace the personal data here: it must not overwrite a shared fridge, and
+    /// together with the shared fridges it must stay within the limit. Checked before the preview's confirm button
+    /// and again by `restore`.
+    func checkRestorable(_ backup: FoodManagerBackup) throws {
+        let shared = sharedFridges()
+        if let clash = backup.fridges.first(where: { shared.fridgeIDs.contains($0.id) }) {
+            throw BackupError.sharedFridgeConflict(clash.name)
+        }
+        if backup.fridges.count + shared.reservedSlots > FridgePolicy.maxRefrigerators {
+            throw BackupError.sharedLimit(sharedCount: shared.reservedSlots)
+        }
     }
 
     /// Writes the backup to a fresh temporary file and returns its URL only once the file exists and decodes.
@@ -123,6 +151,7 @@ final class BackupService {
     /// Throws without changing anything (or after restoring the previous data — see `BackupError.restoreFailed`).
     func restore(_ backup: FoodManagerBackup) throws {
         try BackupValidator.validate(backup)
+        try checkRestorable(backup)
         let target = Self.canonical(backup)
 
         // 1. Recovery snapshot, in memory and on disk, before anything changes. A photo whose file is already

@@ -69,7 +69,12 @@ final class BackupFlow: NSObject, UIDocumentPickerDelegate {
 
     /// Validates a backup file and shows its preview (nothing changes until the user confirms there).
     func preview(fileAt url: URL, from presenter: UIViewController, deleteAfterReading: Bool) {
-        let result = Result { try BackupService.readBackup(at: url) }
+        let service = self.service
+        let result = Result { () throws -> FoodManagerBackup in
+            let backup = try BackupService.readBackup(at: url)
+            try service.checkRestorable(backup)
+            return backup
+        }
         if deleteAfterReading { try? FileManager.default.removeItem(at: url) }
         switch result {
         case let .success(backup):

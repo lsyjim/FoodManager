@@ -253,7 +253,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func sharedDataChanged() {
         // A newly readable inventory may carry the link to its read-only structure share.
         if let sharing = currentSession?.sharing { Task { await sharing.continueStructureJoins() } }
-        guard let session = currentSession, home?.canBeRebuilt == true else { return }
+        guard let session = currentSession, home?.canBeRebuilt == true else {
+            home?.refreshSharedIntegrations()
+            return
+        }
         reloadAfterCloudImport(from: session)
     }
 

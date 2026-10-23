@@ -302,6 +302,15 @@ final class FridgeHomeViewController: UIViewController {
         onVisibilityChange?(false, isSharedFridge)
     }
 
+    /// Shared-fridge data changed while this screen couldn't be rebuilt (editor open, sheet on top): reminders and
+    /// widgets are still brought up to date from what this device may read.
+    func refreshSharedIntegrations() {
+        // This fridge's food is cached in memory; re-read it when it's the shared one that changed.
+        if isSharedFridge { _ = inventory.reload() }
+        notifications.scheduleUpdate()
+        publishWidgetSnapshot()
+    }
+
     private var isSharedFridge: Bool {
         guard let ownership = sharing?.ownership(of: fridge.id) else { return false }
         return ownership == .sharedOwned || ownership == .sharedParticipant
@@ -868,6 +877,12 @@ final class FridgeHomeViewController: UIViewController {
             action.subtitle = sharing?.ownership(of: fridge.id).selectorLabel
             return action
         }
+        // Requests waiting for approval and fridges no longer accessible: listed, but nothing to open.
+        let inactive = (sharing.map { $0.policy.joinGate == .allowed ? $0.inactiveEntries() : [] } ?? []).map { entry -> UIAction in
+            let action = UIAction(title: entry.name, image: UIImage(systemName: "hourglass"), attributes: .disabled) { _ in }
+            action.subtitle = entry.ownership.selectorLabel
+            return action
+        }
         let add = UIAction(title: "新增冰箱", image: UIImage(systemName: "plus")) { [weak self] _ in self?.addFridge() }
         if !directory.canAddFridge {
             add.attributes = .disabled
@@ -877,7 +892,7 @@ final class FridgeHomeViewController: UIViewController {
             guard let self, let management = self.makeFridgeManagement() else { return }
             self.navigationController?.pushViewController(management, animated: true)
         }
-        return [UIMenu(options: .displayInline, children: fridges), UIMenu(options: .displayInline, children: [add, manage])]
+        return [UIMenu(options: .displayInline, children: fridges + inactive), UIMenu(options: .displayInline, children: [add, manage])]
     }
 
     func addFridge() {

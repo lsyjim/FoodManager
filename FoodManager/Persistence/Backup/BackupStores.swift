@@ -39,7 +39,7 @@ final class SwiftDataInventoryBackupStore: InventoryBackupStore {
         let records = try context.fetch(FetchDescriptor<FridgeRecord>(sortBy: [SortDescriptor(\.createdAt)]))
         let createdAt = Dictionary(SyncedRecords.unique(records).map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
         // Same mapping (and in-memory layout recovery) the app itself uses; never writes.
-        let fridges = try SwiftDataFridgeStore(container: container).loadAll().map {
+        let fridges = try SwiftDataFridgeStore(container: container).loadExisting().map {
             BackupFridge($0.fridge, createdAt: createdAt[$0.fridge.id] ?? .now)
         }
         let foods = SyncedRecords.unique(try context.fetch(FetchDescriptor<FoodItemRecord>())).map { BackupFood($0.item) }
