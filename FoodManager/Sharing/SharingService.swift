@@ -9,6 +9,8 @@ enum SharingServiceError: Error, Equatable {
     /// The server didn't confirm every record; nothing changed for the user.
     case uploadIncomplete
     case shareFailed
+    /// A CloudKit error at one step (`code`: CKError code), so a failure can be reported precisely.
+    case cloudKit(step: String, code: Int)
 
     var message: String {
         switch self {
@@ -17,7 +19,9 @@ enum SharingServiceError: Error, Equatable {
         case .notAllowed: return "目前無法使用共享冰箱。"
         case .syncUnavailable: return "請先登入 iCloud 並開啟「iCloud 自動同步」，才能共享冰箱。"
         case .fridgeNotFound: return "找不到這台冰箱。"
-        case .uploadIncomplete, .shareFailed: return "無法連線到 iCloud，冰箱沒有變更，請稍後再試。"
+        case .uploadIncomplete: return "上傳到 iCloud 沒有全部完成，冰箱沒有變更，請稍後再試。"
+        case .shareFailed: return "無法建立 iCloud 共享，冰箱沒有變更，請稍後再試。"
+        case let .cloudKit(step, code): return "共享沒有完成（\(step)失敗，CloudKit 錯誤 \(code)），冰箱沒有變更，請稍後再試。"
         }
     }
 }
@@ -31,6 +35,8 @@ protocol SharingCloud: AnyObject {
     func createShares(fridgeID: UUID, title: String) async throws -> (invitation: URL, structure: URL)
     /// Removes both zones again (a conversion that didn't complete).
     func rollback(fridgeID: UUID)
+    /// Deletes both zones now and waits for the server (before retrying an interrupted conversion).
+    func resetZones(fridgeID: UUID) async throws
 }
 
 /// Owner side of Phase 5D-2: turns a personal fridge into a shared one and hands out the invitation link.
@@ -68,6 +74,17 @@ final class SharingService {
         self.hasPremium = hasPremium
         self.snapshots = snapshots
         self.defaults = defaults
+        inventory.hiddenFridgeIDs = { [weak self] in self?.incompleteConversions() ?? [] }
+    }
+
+    /// Owned fridges that exist both as a personal fridge and in the shared store while their conversion never
+    /// completed (e.g. records of a failed attempt came back from iCloud). The personal fridge stays the real one;
+    /// sharing it again resumes the conversion from scratch.
+    func incompleteConversions() -> Set<UUID> {
+        guard let personalIDs = try? personal.existingIDs(), !personalIDs.isEmpty,
+              let shared = try? inventory.store.fridges() else { return [] }
+        let owned = Set(shared.filter { $0.role == .owner }.map(\.id))
+        return owned.intersection(personalIDs).subtracting(pendingRemovals)
     }
 
     var startGate: SharingGate { policy.startSharingGate(hasPremium: hasPremium()) }
@@ -85,10 +102,20 @@ final class SharingService {
 
     /// Shares a personal fridge and returns the invitation link (also if it was already shared).
     func share(fridgeID: UUID, backups: BackupService) async throws -> URL {
-        if let url = invitationURL(for: fridgeID) { return url }
+        let resuming = incompleteConversions().contains(fridgeID)
+        if !resuming, let url = invitationURL(for: fridgeID) { return url }
         let gate = startGate
         guard gate == .allowed else { throw SharingServiceError.notAllowed(gate) }
         guard cloud.isReady else { throw SharingServiceError.syncUnavailable }
+        if resuming {
+            // Start over from the personal fridge: drop whatever an earlier attempt left on the server and here.
+            do {
+                try await cloud.resetZones(fridgeID: fridgeID)
+            } catch {
+                throw Self.failure(error, step: "清除上次未完成的共享")
+            }
+            try inventory.store.purgeFridge(fridgeID, keepPlaceholder: false)
+        }
 
         let backup = try backups.makeBackup(allowMissingPhotos: false)
         guard let fridge = backup.fridges.first(where: { $0.id == fridgeID }) else { throw SharingServiceError.fridgeNotFound }
@@ -99,21 +126,48 @@ final class SharingService {
 
         let records = try inventory.importOwnedFridge(fridge, foods: backup.foods, magnets: magnets, images: images)
         let urls: (invitation: URL, structure: URL)
+        var step = "上傳"
         do {
             try await cloud.upload(fridgeID: fridgeID, records: records)
-            guard try inventory.unconfirmedRecords(of: fridgeID) == 0 else { throw SharingServiceError.uploadIncomplete }
+            let unconfirmed = try inventory.unconfirmedRecords(of: fridgeID)
+            guard unconfirmed == 0 else {
+                logger.error("Sharing: \(unconfirmed, privacy: .public) record(s) not confirmed by the server")
+                throw SharingServiceError.uploadIncomplete
+            }
+            step = "建立共享"
             urls = try await cloud.createShares(fridgeID: fridgeID, title: fridge.name)
+            step = "儲存共享"
             try inventory.markShared(fridgeID, invitationURL: urls.invitation, structureURL: urls.structure)
         } catch {
             cloud.rollback(fridgeID: fridgeID)
             try? inventory.store.purgeFridge(fridgeID, keepPlaceholder: false)
-            logger.error("Sharing a fridge did not complete; personal data unchanged")
-            throw (error as? SharingServiceError) ?? SharingServiceError.shareFailed
+            throw Self.failure(error, step: step)
         }
 
         pendingRemovals.insert(fridgeID)
         finishPendingRemovals()
         return urls.invitation
+    }
+
+    /// Logs the failing step with the CloudKit error code (never record contents or share URLs) and maps it to a
+    /// message the user can report.
+    private static func failure(_ error: Error, step: String) -> Error {
+        let logger = Logger(subsystem: "FoodManager.HowCode", category: "Sharing")
+        if let error = error as? SharingServiceError {
+            logger.error("Sharing failed at \(step, privacy: .public): \(String(describing: error), privacy: .public)")
+            return error
+        }
+        let ckError = error as? CKError
+        let detail = ckError.map { error -> String in
+            let partial = error.partialErrorsByItemID?.values.compactMap { ($0 as? CKError)?.code.rawValue } ?? []
+            return "code \(error.code.rawValue) partial \(Set(partial).sorted()) \(error.localizedDescription)"
+        } ?? String(describing: type(of: error))
+        logger.error("Sharing failed at \(step, privacy: .public): \(detail, privacy: .public)")
+        if let ckError {
+            let partialCode = ckError.partialErrorsByItemID?.values.compactMap { ($0 as? CKError)?.code.rawValue }.first
+            return SharingServiceError.cloudKit(step: step, code: partialCode ?? ckError.code.rawValue)
+        }
+        return SharingServiceError.shareFailed
     }
 
     /// Removes personal copies of fridges whose sharing completed (retried at launch if it failed before).
@@ -147,7 +201,11 @@ final class CloudKitSharingCloud: SharingCloud {
     func upload(fridgeID: UUID, records: [CKRecord.ID]) async throws {
         engine.queueZones(for: fridgeID)
         engine.queueSave(records, scope: .private)
-        try await engine.sendChanges(scope: .private)
+        // Records the server reported as conflicting are queued again by the engine; send those too.
+        for _ in 0..<3 {
+            try await engine.sendChanges(scope: .private)
+            if !engine.hasPendingSaves(records, scope: .private) { return }
+        }
     }
 
     func createShares(fridgeID: UUID, title: String) async throws -> (invitation: URL, structure: URL) {
@@ -183,5 +241,10 @@ final class CloudKitSharingCloud: SharingCloud {
 
     func rollback(fridgeID: UUID) {
         engine.queueZoneDeletion(for: fridgeID)
+    }
+
+    func resetZones(fridgeID: UUID) async throws {
+        engine.queueZoneDeletion(for: fridgeID)
+        try await engine.sendChanges(scope: .private)
     }
 }

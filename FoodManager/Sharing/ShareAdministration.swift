@@ -1,5 +1,4 @@
 import CloudKit
-import Contacts
 import Foundation
 
 // Owner side of Phase 5D-3: access requests (approve / deny / block), members (remove), blocked users (unblock),
@@ -111,14 +110,14 @@ final class CloudKitShareAdministrator: ShareAdministering {
         return ShareOverview(
             requesters: share.requesters.map { requester in
                 SharePerson(id: Self.key(requester.participantLookupInfo),
-                            name: Self.name(requester.userIdentity.nameComponents, contact: requester.contact),
+                            name: Self.name(requester.userIdentity.nameComponents),
                             contactDetail: requester.participantLookupInfo.emailAddress ?? requester.participantLookupInfo.phoneNumber)
             },
             members: share.participants
                 .filter { $0.role != .owner && $0.userIdentity.userRecordID != owner }
-                .map { SharePerson(id: $0.participantID, name: Self.name($0.userIdentity.nameComponents, contact: nil), contactDetail: nil) },
+                .map { SharePerson(id: $0.participantID, name: Self.name($0.userIdentity.nameComponents), contactDetail: nil) },
             blocked: share.blockedIdentities.map { identity in
-                SharePerson(id: Self.key(identity.userIdentity), name: Self.name(identity.userIdentity.nameComponents, contact: identity.contact),
+                SharePerson(id: Self.key(identity.userIdentity), name: Self.name(identity.userIdentity.nameComponents),
                             contactDetail: nil)
             },
             allowsAccessRequests: share.allowsAccessRequests)
@@ -243,11 +242,9 @@ final class CloudKitShareAdministrator: ShareAdministering {
         identity.userRecordID?.recordName ?? identity.lookupInfo.map(key) ?? ""
     }
 
-    private static func name(_ components: PersonNameComponents?, contact: CNContact?) -> String {
-        if let contact {
-            let full = CNContactFormatter.string(from: contact, style: .fullName) ?? ""
-            if !full.isEmpty { return full }
-        }
+    /// The name CloudKit returns for the identity. Never reads `contact`: that touches the user's Contacts and needs
+    /// Contacts permission, which this app doesn't ask for.
+    private static func name(_ components: PersonNameComponents?) -> String {
         if let components {
             let formatted = PersonNameComponentsFormatter.localizedString(from: components, style: .default)
             if !formatted.isEmpty { return formatted }

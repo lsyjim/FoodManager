@@ -254,6 +254,23 @@ extension SharedStore {
         try context.save()
     }
 
+    /// Whether this device never received the server's version of the record (a fresh insert).
+    func hasNoSystemFields(_ recordID: CKRecord.ID) throws -> Bool {
+        guard let id = UUID(uuidString: recordID.recordName) else { return false }
+        let context = makeContext()
+        let kind = SharedZone.parse(recordID.zoneID)?.kind
+        if let fridge = try fetchFridge(id, in: context) {
+            return (kind == .inventory ? fridge.linkSystemFields : fridge.systemFields) == nil
+        }
+        if let food = try context.fetch(FetchDescriptor<SharedFoodRecord>(predicate: #Predicate { $0.id == id })).first {
+            return food.systemFields == nil
+        }
+        if let magnet = try context.fetch(FetchDescriptor<SharedMagnetRecord>(predicate: #Predicate { $0.id == id })).first {
+            return magnet.systemFields == nil
+        }
+        return false
+    }
+
     /// Local updatedAt of a food (for last-writer-wins on its non-quantity fields).
     func foodUpdatedAt(_ id: UUID) throws -> Date? {
         try makeContext().fetch(FetchDescriptor<SharedFoodRecord>(predicate: #Predicate { $0.id == id })).first?.updatedAt

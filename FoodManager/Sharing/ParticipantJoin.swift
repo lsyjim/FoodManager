@@ -145,7 +145,8 @@ extension SharingService {
 
     /// What backups must leave alone: every shared fridge, and the slots shared fridges and requests hold.
     func backupExclusion() -> SharedFridgeExclusion {
-        let fridges = (try? inventory.store.fridges()) ?? []
+        let hidden = incompleteConversions()
+        let fridges = ((try? inventory.store.fridges()) ?? []).filter { !hidden.contains($0.id) }
         return SharedFridgeExclusion(fridgeIDs: Set(fridges.map(\.id)),
                                      reservedSlots: FridgePolicy.fridgeCount(personal: 0, shared: fridges.map(\.ownership)) + invitations().count)
     }
@@ -165,7 +166,8 @@ extension SharingService {
     /// Owned + shared + joined + waiting must stay within the limit. A link that already waits keeps its own slot.
     private func hasFreeSlot(forLink url: URL) -> Bool {
         let personalCount = (try? personal.loadExisting().count) ?? FridgePolicy.maxRefrigerators
-        let shared = (try? inventory.store.ownerships()) ?? []
+        let hidden = incompleteConversions()
+        let shared = ((try? inventory.store.fridges()) ?? []).filter { !hidden.contains($0.id) }.map(\.ownership)
         let waiting = invitations().filter { $0.url != url }.count
         return FridgePolicy.fridgeCount(personal: personalCount, shared: shared) + waiting < FridgePolicy.maxRefrigerators
     }

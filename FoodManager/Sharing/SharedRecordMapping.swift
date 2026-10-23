@@ -206,7 +206,8 @@ enum SharedRecordCoder {
         record["name"] = fields.name
         record["categoryID"] = fields.categoryID
         record["baseQuantity"] = (fields.baseQuantity as NSDecimalNumber).description(withLocale: posix)
-        record["foldedOpIDs"] = fields.foldedOpIDs.map(\.uuidString)
+        // CloudKit can't create a list field from an empty list (it can't tell the element type): leave it unset.
+        record["foldedOpIDs"] = fields.foldedOpIDs.isEmpty ? nil : fields.foldedOpIDs.map(\.uuidString)
         record["unit"] = fields.unit
         record["storedAt"] = fields.storedAt
         record["expirationDate"] = fields.expirationDate

@@ -117,6 +117,11 @@ final class SwiftDataFridgeStore: FridgeStore {
             .map(fridge(from:))
     }
 
+    /// IDs of the stored fridges (cheap; no layout decoding).
+    func existingIDs() throws -> Set<UUID> {
+        Set(try makeContext().fetch(FetchDescriptor<FridgeRecord>()).map(\.id))
+    }
+
     /// After a fridge became shared (its copy in the shared store is confirmed by the server): removes every
     /// personal row of it — fridge, food and history, magnets and photos only it used — in one save.
     func removeFridgeAfterSharing(_ fridgeID: UUID) throws {

@@ -31,6 +31,8 @@ final class SharingOwnerTests: XCTestCase {
         }
 
         func rollback(fridgeID: UUID) { rollbacks.append(fridgeID) }
+        var resets: [UUID] = []
+        func resetZones(fridgeID: UUID) async throws { resets.append(fridgeID) }
     }
 
     private var defaults: UserDefaults!
@@ -175,6 +177,60 @@ final class SharingOwnerTests: XCTestCase {
             XCTAssertEqual(error as? SharingServiceError, .syncUnavailable)
         }
         XCTAssertTrue(offline.cloud.uploads.isEmpty)
+    }
+
+    func testLeftoversOfAFailedAttemptDontHideThePersonalFridge() async throws {
+        let (fixture, _) = try makeFixture()
+        let fridge = fixture.session.loadResult.fridge
+        let milk = try addFood("牛奶", quantity: 5, to: fridge, store: fixture.session.foodStore)
+        // A failed attempt: only the structure reached iCloud, then the sync engine fetched it back.
+        let partial = SharedRecordCoder.encode(SharedFridgeFields(id: fridge.id, name: fridge.name, templateID: fridge.templateID,
+                                                                  layoutData: try StoredLayout.encode(fridge), createdAt: .now, updatedAt: .now),
+                                               ownerName: CKCurrentUserDefaultName, systemFields: nil)
+        try fixture.inventory.store.apply(modifications: [partial, CKShare(recordZoneID: SharedZone.id(fridgeID: fridge.id, kind: .inventory))],
+                                          deletions: [], scope: .private)
+
+        // The personal fridge (with its food) is still what the app shows, and it can be shared again.
+        XCTAssertEqual(fixture.service.incompleteConversions(), [fridge.id])
+        XCTAssertEqual(fixture.service.ownership(of: fridge.id), .personalOwned)
+        XCTAssertTrue(fixture.service.canOfferSharing(fridge.id))
+        let food = RoutingFoodStore(personal: SwiftDataFoodStore(container: fixture.container), shared: fixture.inventory)
+        XCTAssertEqual(try food.activeItems(fridgeID: fridge.id).map(\.id), [milk.id])
+        XCTAssertTrue(FridgePolicy.canAddFridge(personal: 1, shared: []))
+        XCTAssertTrue(fixture.service.backupExclusion().fridgeIDs.isEmpty, "its backup stays restorable")
+
+        // Sharing again starts over: the leftover zones are reset first, then everything is uploaded.
+        let url = try await fixture.service.share(fridgeID: fridge.id, backups: backups(fixture.session))
+        XCTAssertTrue(url.absoluteString.contains("inventory"))
+        XCTAssertEqual(fixture.cloud.resets, [fridge.id])
+        XCTAssertEqual(fixture.service.ownership(of: fridge.id), .sharedOwned)
+        XCTAssertTrue(fixture.service.incompleteConversions().isEmpty)
+        XCTAssertEqual(try food.activeItems(fridgeID: fridge.id).first?.quantity, 5, "food made it into the shared fridge")
+        XCTAssertTrue(try fixture.personal.loadExisting().isEmpty)
+    }
+
+    func testFailureNamesTheStepAndCloudKitCode() async throws {
+        final class FailingCloud: SharingCloud {
+            var isReady = true
+            func upload(fridgeID: UUID, records: [CKRecord.ID]) async throws { throw CKError(.invalidArguments) }
+            func createShares(fridgeID: UUID, title: String) async throws -> (invitation: URL, structure: URL) { throw SharingServiceError.shareFailed }
+            func rollback(fridgeID: UUID) {}
+            func resetZones(fridgeID: UUID) async throws {}
+        }
+        let container = try SwiftDataFridgeStore.makeContainer(inMemory: true)
+        let inventory = SharedInventory(store: SharedStore(container: try SharedStore.makeContainer(inMemory: true)))
+        let service = SharingService(policy: active, inventory: inventory, cloud: FailingCloud(), personal: SwiftDataFridgeStore(container: container),
+                                     hasPremium: { false }, snapshots: nil, defaults: defaults)
+        let session = try AppBootstrap.makeSession(container: container, mode: .inMemoryForTesting,
+                                                   selection: InMemoryFridgeSelectionStore(), sharing: service).get()
+        do {
+            _ = try await service.share(fridgeID: session.loadResult.fridge.id, backups: backups(session))
+            XCTFail()
+        } catch {
+            XCTAssertEqual(error as? SharingServiceError, .cloudKit(step: "上傳", code: CKError.Code.invalidArguments.rawValue))
+            XCTAssertTrue((error as? SharingServiceError)?.message.contains("CloudKit 錯誤 12") ?? false)
+        }
+        XCTAssertFalse(inventory.contains(session.loadResult.fridge.id))
     }
 
     func testInterruptedRemovalIsFinishedLater() async throws {

@@ -16,6 +16,9 @@ final class SharedInventory {
 
     let store: SharedStore
     var onLocalChange: ((Change) -> Void)?
+    /// Fridges whose shared copy must not be used: leftovers of a sharing attempt that didn't complete (the personal
+    /// fridge is still the real one). Treated as if they weren't in this store.
+    var hiddenFridgeIDs: () -> Set<UUID> = { [] }
 
     init(store: SharedStore) {
         self.store = store
@@ -25,13 +28,15 @@ final class SharedInventory {
 
     /// Fridges that can be shown and used (pending and unavailable ones are listed separately via `store`).
     func loadAll() throws -> [FridgeLoadResult] {
-        try store.makeContext().fetch(FetchDescriptor<SharedFridgeRecord>(sortBy: [SortDescriptor(\.createdAt)]))
-            .filter { $0.status == .active }
+        let hidden = hiddenFridgeIDs()
+        return try store.makeContext().fetch(FetchDescriptor<SharedFridgeRecord>(sortBy: [SortDescriptor(\.createdAt)]))
+            .filter { $0.status == .active && !hidden.contains($0.id) }
             .map(Self.loadResult)
     }
 
     func contains(_ fridgeID: UUID) -> Bool {
-        (try? fridgeRow(fridgeID, in: store.makeContext())) != nil
+        guard !hiddenFridgeIDs().contains(fridgeID) else { return false }
+        return (try? fridgeRow(fridgeID, in: store.makeContext())) != nil
     }
 
     func role(of fridgeID: UUID) -> SharedFridgeRole? {
@@ -39,7 +44,8 @@ final class SharedInventory {
     }
 
     func ownership(of fridgeID: UUID) -> SharedFridgeOwnership? {
-        (try? fridgeRow(fridgeID, in: store.makeContext()))?.ownership
+        guard !hiddenFridgeIDs().contains(fridgeID) else { return nil }
+        return (try? fridgeRow(fridgeID, in: store.makeContext()))?.ownership
     }
 
     func zoneOwnerName(of fridgeID: UUID) -> String? {
@@ -162,13 +168,18 @@ final class SharedInventory {
     }
 
     func allItems() throws -> [FoodItem] {
+        let hidden = hiddenFridgeIDs()
         let context = store.makeContext()
         let ops = Dictionary(grouping: try context.fetch(FetchDescriptor<SharedQuantityOpRecord>()).map(\.op), by: \.foodID)
-        return try context.fetch(FetchDescriptor<SharedFoodRecord>()).map { Self.item(from: $0, ops: ops[$0.id] ?? []) }
+        return try context.fetch(FetchDescriptor<SharedFoodRecord>()).filter { !hidden.contains($0.fridgeID) }
+            .map { Self.item(from: $0, ops: ops[$0.id] ?? []) }
     }
 
     func containsFood(_ id: UUID) -> Bool {
-        ((try? store.makeContext().fetchCount(FetchDescriptor<SharedFoodRecord>(predicate: #Predicate { $0.id == id }))) ?? 0) > 0
+        guard let food = try? store.makeContext().fetch(FetchDescriptor<SharedFoodRecord>(predicate: #Predicate { $0.id == id })).first else {
+            return false
+        }
+        return !hiddenFridgeIDs().contains(food.fridgeID)
     }
 
     /// Creates or edits a food. A quantity change becomes a new op (never an overwrite of the base), so edits on two
@@ -228,7 +239,9 @@ final class SharedInventory {
     }
 
     func allMagnets() throws -> [FridgeMagnet] {
-        try store.makeContext().fetch(FetchDescriptor<SharedMagnetRecord>()).compactMap(Self.magnet)
+        let hidden = hiddenFridgeIDs()
+        return try store.makeContext().fetch(FetchDescriptor<SharedMagnetRecord>()).filter { !hidden.contains($0.fridgeID) }
+            .compactMap(Self.magnet)
     }
 
     func imageData(id: UUID) throws -> Data? {

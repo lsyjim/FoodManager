@@ -41,6 +41,11 @@ final class SharedSyncEngine: CKSyncEngineDelegate, @unchecked Sendable {
 
     /// Owner: creates both zones of a fridge that is being shared.
     func queueZones(for fridgeID: UUID) {
+        // A deletion still pending from an earlier, rolled-back attempt must not remove the zones again later.
+        engines[.private]?.state.remove(pendingDatabaseChanges: [
+            .deleteZone(SharedZone.id(fridgeID: fridgeID, kind: .structure)),
+            .deleteZone(SharedZone.id(fridgeID: fridgeID, kind: .inventory))
+        ])
         engines[.private]?.state.add(pendingDatabaseChanges: [
             .saveZone(CKRecordZone(zoneID: SharedZone.id(fridgeID: fridgeID, kind: .structure))),
             .saveZone(CKRecordZone(zoneID: SharedZone.id(fridgeID: fridgeID, kind: .inventory)))
@@ -67,6 +72,16 @@ final class SharedSyncEngine: CKSyncEngineDelegate, @unchecked Sendable {
     func sendChanges(scope: SharedDatabaseScope) async throws {
         guard let engine = engines[scope] else { throw SharingServiceError.syncUnavailable }
         try await engine.sendChanges()
+    }
+
+    /// Whether any of these records still waits to be sent.
+    func hasPendingSaves(_ recordIDs: [CKRecord.ID], scope: SharedDatabaseScope) -> Bool {
+        guard let pending = engines[scope]?.state.pendingRecordZoneChanges else { return false }
+        let ids = Set(recordIDs)
+        return pending.contains { change in
+            if case let .saveRecord(id) = change { return ids.contains(id) }
+            return false
+        }
     }
 
     var privateDatabase: CKDatabase { container.privateCloudDatabase }
@@ -156,11 +171,19 @@ final class SharedSyncEngine: CKSyncEngineDelegate, @unchecked Sendable {
             switch failure.error.code {
             case .serverRecordChanged:
                 guard let server = failure.error.serverRecord else { continue }
+                let isOp = server.recordType == SharedRecordType.quantityOp
+                // The owner re-uploading a record this device never got back (e.g. a retried sharing attempt):
+                // the local copy is the one being shared, so it replaces the server's.
+                let neverSynced = try store.hasNoSystemFields(recordID)
+                let ownerRetry = scope == .private && !isOp && neverSynced
+                var localFoodIsNewer = false
                 if server.recordType == SharedRecordType.food, let id = UUID(uuidString: recordID.recordName),
-                   let localUpdatedAt = try store.foodUpdatedAt(id), let serverUpdatedAt = server["updatedAt"] as? Date,
-                   localUpdatedAt > serverUpdatedAt {
-                    // Local edit is newer: adopt the server's change tag and send it again (quantities are ops, so
-                    // only names/dates/compartment follow last-writer-wins).
+                   let localUpdatedAt = try store.foodUpdatedAt(id), let serverUpdatedAt = server["updatedAt"] as? Date {
+                    localFoodIsNewer = localUpdatedAt > serverUpdatedAt
+                }
+                if ownerRetry || localFoodIsNewer {
+                    // Adopt the server's change tag and send the local version again (quantities are ops, so only
+                    // names/dates/compartment follow last-writer-wins).
                     try store.didSave(server)
                     engine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 } else {

@@ -12,6 +12,7 @@ final class SharingIntegrationTests: XCTestCase {
         func upload(fridgeID: UUID, records: [CKRecord.ID]) async throws {}
         func createShares(fridgeID: UUID, title: String) async throws -> (invitation: URL, structure: URL) { throw SharingServiceError.shareFailed }
         func rollback(fridgeID: UUID) {}
+        func resetZones(fridgeID: UUID) async throws {}
     }
 
     private let owner = "_owner"

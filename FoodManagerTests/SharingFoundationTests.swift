@@ -127,6 +127,32 @@ final class SharingFoundationTests: XCTestCase {
                        .quantityOp(take, fridgeID: fridge.id))
     }
 
+    func testEmptyFoldedListIsNotSentToCloudKit() throws {
+        // CloudKit rejects creating a list field from an empty list ("Invalid Arguments").
+        let fridge = FridgeFactory.makeDefault()
+        let food = foodFields(fridge: fridge)
+        let record = SharedRecordCoder.encode(food, ownerName: owner, systemFields: nil)
+        XCTAssertNil(record["foldedOpIDs"])
+        XCTAssertFalse(record.allKeys().contains("foldedOpIDs"))
+        XCTAssertEqual(SharedRecordCoder.decode(record), .food(food), "missing list reads back as empty")
+
+        var folded = food
+        folded.foldedOpIDs = [UUID()]
+        XCTAssertEqual(SharedRecordCoder.encode(folded, ownerName: owner, systemFields: nil)["foldedOpIDs"] as? [String],
+                       folded.foldedOpIDs.map(\.uuidString))
+    }
+
+    func testFreshInsertsAreRecognisedForConflictRetry() throws {
+        let store = try makeStore()
+        let fridge = FridgeFactory.makeDefault()
+        let record = SharedRecordCoder.encode(try fridgeFields(fridge), ownerName: CKCurrentUserDefaultName, systemFields: nil)
+        try store.apply(modifications: [record], deletions: [], scope: .private)
+        XCTAssertFalse(try store.hasNoSystemFields(record.recordID), "applied from the server: has its change tag")
+        try store.clearSystemFields(recordID: record.recordID)
+        XCTAssertTrue(try store.hasNoSystemFields(record.recordID))
+        XCTAssertFalse(try store.hasNoSystemFields(CKRecord.ID(recordName: UUID().uuidString, zoneID: record.recordID.zoneID)))
+    }
+
     func testStructureFromTheInventoryZoneIsIgnored() throws {
         let fields = try fridgeFields()
         // A participant (who can write the inventory zone) plants a "fridge" record there to rename the fridge.

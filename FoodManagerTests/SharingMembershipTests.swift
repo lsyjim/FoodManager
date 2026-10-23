@@ -37,6 +37,7 @@ final class SharingMembershipTests: XCTestCase {
             throw SharingServiceError.shareFailed
         }
         func rollback(fridgeID: UUID) {}
+        func resetZones(fridgeID: UUID) async throws {}
     }
 
     private let invitation = URL(string: "https://www.icloud.com/share/inv")!
