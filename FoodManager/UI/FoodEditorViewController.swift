@@ -73,6 +73,23 @@ final class FoodEditorViewController: UIViewController {
         presenter.present(navigation, animated: true)
     }
 
+    /// Add form filled in from elsewhere (a purchased shopping item). The user still picks the compartment and an
+    /// expiry date; nothing is saved before 儲存.
+    static func presentPrefilled(name: String, categoryID: String?, quantity: Decimal?, unit: String?, inventory: FoodInventoryService,
+                                 compartments: [Compartment], from presenter: UIViewController, onAdded: @escaping (FoodItem) -> Void) {
+        let editor = FoodEditorViewController(mode: .add(compartmentID: nil), inventory: inventory, compartments: compartments)
+        editor.draft.name = name
+        if let categoryID, FoodCategoryCatalog.contains(categoryID) { editor.draft.categoryID = categoryID }
+        if let quantity, quantity > 0 { editor.draft.quantity = quantity }
+        if let unit, !unit.trimmingCharacters(in: .whitespaces).isEmpty { editor.draft.unit = unit }
+        editor.onAdded = onAdded
+        let navigation = UINavigationController(rootViewController: editor)
+        navigation.modalPresentationStyle = .pageSheet
+        navigation.isModalInPresentation = true
+        navigation.sheetPresentationController?.detents = [.large()]
+        presenter.present(navigation, animated: true)
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = Theme.Color.background
@@ -477,6 +494,8 @@ final class FoodEditorViewController: UIViewController {
 
     /// Called instead of `dismiss` when set (tests); production dismisses the sheet.
     var onFinished: (() -> Void)?
+    /// Called with the new record after an add saved successfully (e.g. a shopping item put into the fridge).
+    var onAdded: ((FoodItem) -> Void)?
     private(set) var isSubmitting = false
 
     private func save() {
@@ -504,7 +523,9 @@ final class FoodEditorViewController: UIViewController {
         defer { isSubmitting = false; setControlsEnabled(true) }
         do {
             switch mode {
-            case .add: try inventory.add(draft)
+            case .add:
+                let item = try inventory.add(draft)
+                onAdded?(item)
             case let .edit(foodID): try inventory.update(foodID, with: draft)
             }
             if draft.expirationDate != nil || draft.storageReminderDays != nil {

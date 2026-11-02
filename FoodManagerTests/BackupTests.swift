@@ -181,9 +181,9 @@ final class BackupTests: XCTestCase {
         json["formatVersion"] = 0
         XCTAssertThrowsError(try BackupValidator.decode(data(json))) { XCTAssertEqual($0 as? BackupError, .unsupportedVersion(0)) }
         // A future format is reported as such even if its fields changed shape.
-        let future = try data(["formatVersion": 3, "somethingNew": true])
+        let future = try data(["formatVersion": FoodManagerBackup.currentFormatVersion + 1, "somethingNew": true])
         XCTAssertThrowsError(try BackupValidator.decode(future)) {
-            XCTAssertEqual($0 as? BackupError, .unsupportedVersion(3))
+            XCTAssertEqual($0 as? BackupError, .unsupportedVersion(FoodManagerBackup.currentFormatVersion + 1))
             XCTAssertTrue(($0 as? BackupError)?.message.contains("更新") == true)
         }
         XCTAssertThrowsError(try BackupValidator.decode(data(["fridges": []]))) { XCTAssertEqual($0 as? BackupError, .notABackup) }

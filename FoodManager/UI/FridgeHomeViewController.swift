@@ -1,3 +1,4 @@
+import SwiftData
 import UIKit
 import os
 
@@ -14,6 +15,7 @@ final class FridgeHomeViewController: UIViewController {
     /// The argument is nil on success, else the failure message to show.
     var onDataRestored: ((String?) -> Void)?
     private let makeBackupService: () -> BackupService
+    private let sessionContainer: ModelContainer
     /// Shared refrigerators (nil while sharing is off: no labels, no entry points).
     private let sharing: SharingService?
     /// Whether this home screen (and so a shared fridge, if it is one) is on screen.
@@ -96,6 +98,10 @@ final class FridgeHomeViewController: UIViewController {
     private let footer = UIStackView()
     private let statusBanner = UIButton(type: .system)
     private lazy var searchButton = UIButton.sketchButton(title: "搜尋", systemImage: "magnifyingglass")
+    /// 每週餐桌 / 購物清單 shortcuts: above the banner, visible with the door open or closed.
+    private lazy var mealCard = HomeShortcutCard(title: "每週餐桌", systemImage: "fork.knife", identifier: "home.mealPlanner")
+    private lazy var shoppingCard = HomeShortcutCard(title: "購物清單", systemImage: "basket", identifier: "home.shoppingList")
+    private lazy var mealStore: MealPlanStore = SwiftDataMealPlanStore(container: sessionContainer)
     private lazy var addFoodButton = UIButton.sketchButton(title: "新增食材", systemImage: "plus", filled: true)
 
     // Closed state
@@ -129,6 +135,7 @@ final class FridgeHomeViewController: UIViewController {
         directory = session.directory
         foodStore = session.foodStore
         makeBackupService = { session.makeBackupService() }
+        sessionContainer = session.container
         sharing = session.sharing
         magnetLibrary = session.magnets
         fridge = session.loadResult.fridge
@@ -287,6 +294,7 @@ final class FridgeHomeViewController: UIViewController {
         super.viewWillAppear(animated)
         // Home draws its own header; pushed screens (reminder center) use the navigation bar.
         navigationController?.setNavigationBarHidden(true, animated: animated)
+        refreshShortcutCards()
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -473,6 +481,12 @@ final class FridgeHomeViewController: UIViewController {
 
         footer.axis = .vertical
         footer.spacing = 8
+        let shortcuts = UIStackView(arrangedSubviews: [mealCard, shoppingCard])
+        shortcuts.spacing = 12
+        shortcuts.distribution = .fillEqually
+        mealCard.addAction(UIAction { [weak self] _ in self?.openMealPlanner() }, for: .touchUpInside)
+        shoppingCard.addAction(UIAction { [weak self] _ in self?.openShoppingList() }, for: .touchUpInside)
+        footer.addArrangedSubview(shortcuts)
         footer.addArrangedSubview(statusBanner)
         if let bannerContainer { footer.addArrangedSubview(bannerContainer) }
         footer.addArrangedSubview(actionBar)
@@ -618,6 +632,9 @@ final class FridgeHomeViewController: UIViewController {
             NotificationCenter.default.addObserver(self, selector: #selector(monetizationChanged), name: name, object: nil)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(fridgesChanged), name: .fridgesDidChange, object: nil)
+        for name in [Notification.Name.mealPlanDidChange, .shoppingListDidChange, UIApplication.significantTimeChangeNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(refreshShortcutCards), name: name, object: nil)
+        }
         dashboardView.onSelectReminder = { [weak self] kind, storage in self?.openReminderCenter(kind: kind, storage: storage) }
         addFoodButton.addAction(UIAction { [weak self] _ in self?.openFoodEditor(.add(compartmentID: nil)) }, for: .touchUpInside)
         closeDoorButton.accessibilityLabel = "關上冰箱"
@@ -837,6 +854,8 @@ final class FridgeHomeViewController: UIViewController {
             }
         }
         center.onOpenSettings = { [weak self, weak center] in self?.openNotificationSettings(from: center) }
+        center.onOpenCalendar = { [weak self] in self?.openCalendar() }
+        center.onOpenStatistics = { [weak self] in self?.openStatistics() }
         navigationController?.pushViewController(center, animated: true)
     }
 
@@ -937,9 +956,64 @@ final class FridgeHomeViewController: UIViewController {
         }
         let settings = SettingsViewController(entitlements: entitlements, ads: ads, notifications: notifications,
                                               makeFridgeManagement: { [weak self] in self?.makeFridgeManagement() },
-                                              backup: backup, icloudBackup: icloudBackup)
+                                              backup: backup, icloudBackup: icloudBackup,
+                                              makeCalendar: { [weak self] in self?.makeCalendar() },
+                                              makeStatistics: { [weak self] in self?.makeStatistics() })
         navigationController?.pushViewController(settings, animated: true)
     }
+
+    // MARK: - 每週餐桌 / 購物清單
+
+    var mealPlannerContext: MealPlannerContext {
+        MealPlannerContext(store: mealStore, directory: directory, foodStore: foodStore,
+                           currentFridgeID: { [weak self] in self?.fridge.id ?? UUID() }, ads: ads,
+                           putIntoFridge: { [weak self] item, presenter, onAdded in
+                               guard let self else { return }
+                               FoodEditorViewController.presentPrefilled(name: item.name, categoryID: item.categoryID, quantity: item.quantity,
+                                                                         unit: item.unit, inventory: self.inventory,
+                                                                         compartments: self.fridge.allCompartments, from: presenter,
+                                                                         onAdded: onAdded)
+                           })
+    }
+
+    func openMealPlanner() {
+        guard !isEditingLayout else { return showRouteMessage("請先完成或取消隔層編輯") }
+        if presentedViewController != nil { dismiss(animated: false) }
+        navigationController?.pushViewController(WeeklyMealPlannerViewController(context: mealPlannerContext), animated: true)
+    }
+
+    func openShoppingList() {
+        guard !isEditingLayout else { return showRouteMessage("請先完成或取消隔層編輯") }
+        if presentedViewController != nil { dismiss(animated: false) }
+        navigationController?.pushViewController(ShoppingListViewController(context: mealPlannerContext), animated: true)
+    }
+
+    /// Today's planned meals and the pending shopping items (no read error is shown as a number).
+    @objc func refreshShortcutCards() {
+        let today = DayKey(Date())
+        if let dishes = try? mealStore.dishes(from: today, through: today) {
+            mealCard.setValue(HomeShortcutCounts.mealText(HomeShortcutCounts.mealsPlannedToday(dishes, today: today)))
+        } else {
+            mealCard.setValue("無法讀取")
+        }
+        if let items = try? mealStore.shoppingItems() {
+            shoppingCard.setValue(HomeShortcutCounts.shoppingText(items.filter { !$0.isPurchased }.count))
+        } else {
+            shoppingCard.setValue("無法讀取")
+        }
+    }
+
+    /// 食材日曆 / 食材統計: read-only views over the stored records of the session's fridges (personal and shared).
+    func makeCalendar() -> UIViewController {
+        FoodCalendarViewController(loader: FoodAnalyticsLoader(directory: directory, foodStore: foodStore), currentFridgeID: fridge.id)
+    }
+
+    func makeStatistics() -> UIViewController {
+        FoodStatisticsViewController(loader: FoodAnalyticsLoader(directory: directory, foodStore: foodStore), currentFridgeID: fridge.id)
+    }
+
+    func openCalendar() { navigationController?.pushViewController(makeCalendar(), animated: true) }
+    func openStatistics() { navigationController?.pushViewController(makeStatistics(), animated: true) }
 
     /// First launch of a new installation with backups in iCloud: the version list, restoring only after confirmation.
     func presentICloudRestore() {

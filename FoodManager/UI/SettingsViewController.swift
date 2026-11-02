@@ -5,7 +5,7 @@ import UIKit
 final class SettingsViewController: UITableViewController {
     private enum Row: Equatable {
         case upgrade, restore, premiumUnlocked, adFree
-        case notifications, fridges
+        case notifications, fridges, calendar, statistics
         case icloudBackup, exportBackup, importBackup
         case privacyOptions, watchAd, rateApp
         #if DEBUG
@@ -26,13 +26,18 @@ final class SettingsViewController: UITableViewController {
     private let backup: BackupFlow?
     /// Manual iCloud backups (nil for temporary in-memory sessions).
     private let icloudBackup: ICloudBackupService?
+    private let makeCalendar: (() -> UIViewController?)?
+    private let makeStatistics: (() -> UIViewController?)?
     private var sections: [Section] = []
 
     /// `entitlements` / `ads` are nil while monetization is suspended (`MonetizationPolicy`): every paid
     /// entry point (完整版, 恢復購買, 廣告與隱私, developer purchase switches) is then hidden.
     init(entitlements: EntitlementService?, ads: AdsCoordinator?, notifications: NotificationCoordinator,
-         makeFridgeManagement: (() -> UIViewController?)? = nil, backup: BackupFlow? = nil, icloudBackup: ICloudBackupService? = nil) {
+         makeFridgeManagement: (() -> UIViewController?)? = nil, backup: BackupFlow? = nil, icloudBackup: ICloudBackupService? = nil,
+         makeCalendar: (() -> UIViewController?)? = nil, makeStatistics: (() -> UIViewController?)? = nil) {
         self.makeFridgeManagement = makeFridgeManagement
+        self.makeCalendar = makeCalendar
+        self.makeStatistics = makeStatistics
         self.icloudBackup = icloudBackup
         self.backup = backup
         self.entitlements = entitlements
@@ -71,7 +76,10 @@ final class SettingsViewController: UITableViewController {
                 sections.append(Section(title: "完整版", footer: "完整版為一次性購買，永久移除廣告。", rows: [.upgrade, .restore]))
             }
         }
-        sections.append(Section(title: "一般", footer: nil, rows: makeFridgeManagement == nil ? [.notifications] : [.fridges, .notifications]))
+        var general: [Row] = makeFridgeManagement == nil ? [.notifications] : [.fridges, .notifications]
+        if makeCalendar != nil { general.append(.calendar) }
+        if makeStatistics != nil { general.append(.statistics) }
+        sections.append(Section(title: "一般", footer: nil, rows: general))
         if backup != nil {
             if icloudBackup != nil {
                 sections.append(Section(title: "iCloud 備份",
@@ -134,6 +142,16 @@ final class SettingsViewController: UITableViewController {
             content.text = "管理冰箱"
             content.image = UIImage(systemName: "refrigerator")
             cell.accessoryType = .disclosureIndicator
+        case .calendar:
+            content.text = "食材日曆"
+            content.image = UIImage(systemName: "calendar")
+            cell.accessoryType = .disclosureIndicator
+            cell.accessibilityIdentifier = "settings.calendar"
+        case .statistics:
+            content.text = "食材統計"
+            content.image = UIImage(systemName: "chart.pie")
+            cell.accessoryType = .disclosureIndicator
+            cell.accessibilityIdentifier = "settings.statistics"
         case .notifications:
             content.text = "通知設定"
             content.image = UIImage(systemName: "bell")
@@ -225,6 +243,10 @@ final class SettingsViewController: UITableViewController {
             if let management = makeFridgeManagement?() { navigationController?.pushViewController(management, animated: true) }
         case .notifications:
             navigationController?.pushViewController(NotificationSettingsViewController(coordinator: notifications), animated: true)
+        case .calendar:
+            if let screen = makeCalendar?() { navigationController?.pushViewController(screen, animated: true) }
+        case .statistics:
+            if let screen = makeStatistics?() { navigationController?.pushViewController(screen, animated: true) }
         case .icloudBackup:
             guard let icloudBackup, let backup else { return }
             navigationController?.pushViewController(ICloudBackupViewController(service: icloudBackup, backup: backup), animated: true)

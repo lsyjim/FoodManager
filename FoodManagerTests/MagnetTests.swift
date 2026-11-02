@@ -398,7 +398,7 @@ final class MagnetTests: XCTestCase {
         _ = builtIn(&draft, "pomeranian")
         try library.commit(draft)
         let backup = try service(container, images).makeBackup()
-        XCTAssertEqual(backup.formatVersion, 2)
+        XCTAssertEqual(backup.formatVersion, FoodManagerBackup.currentFormatVersion)
         XCTAssertEqual(backup.allMagnets.count, 3)
         XCTAssertEqual(backup.allMagnetImages.map(\.id), [imported.id], "one image for two magnets")
         XCTAssertEqual(backup.allMagnetImages.first?.data, images.data(imported.id))
@@ -542,7 +542,8 @@ final class MagnetTests: XCTestCase {
 
     func testCatalogIsScannedFromTheMagnetFolder() throws {
         // The app's folder: every bundled image is listed, in file-name order, with its file name as the ID.
-        XCTAssertEqual(MagnetCatalog.shared.items.map(\.id), ["daisy", "pomeranian", "postcard-park", "strawberry-cookie"])
+        XCTAssertEqual(MagnetCatalog.shared.items.map(\.id),
+                       ["daisy", "miluandshopping", "pomeranian", "postcard-park", "shoppingandcat", "strawberry-cookie"])
         for item in MagnetCatalog.shared.items {
             XCTAssertNotNil(MagnetCatalog.shared.image(id: item.id), item.id)
             let thumbnail = try XCTUnwrap(MagnetCatalog.shared.thumbnail(id: item.id))

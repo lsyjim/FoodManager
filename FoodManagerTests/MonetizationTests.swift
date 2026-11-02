@@ -262,8 +262,8 @@ final class AdTests: XCTestCase {
         for screen in AppScreen.allCases {
             XCTAssertEqual(AdPlacement.closedHomeBanner.isAllowed(on: screen), screen == .closedHome, "\(screen)")
         }
-        XCTAssertEqual(AdPlacement.allCases, [.closedHomeBanner, .decorationSavedInterstitial, .manualInterstitial],
-                       "version 1.0: one banner and two interstitials, no rewarded ads")
+        XCTAssertEqual(AdPlacement.allCases, [.closedHomeBanner, .decorationSavedInterstitial, .manualInterstitial, .mealPlannedInterstitial],
+                       "version 1.0: one banner and three interstitial placements, no rewarded ads")
     }
 
     // 11

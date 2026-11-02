@@ -9,6 +9,8 @@ struct StoredInventory: Equatable {
     var magnets: [FridgeMagnet] = []
     /// Synced magnet photo bytes by image ID (a restore stores them so they sync too).
     var images: [UUID: Data] = [:]
+    /// Meal plan and shopping list; nil when replacing = leave them as they are.
+    var mealPlanner: BackupMealPlanner? = nil
 }
 
 protocol InventoryBackupStore: AnyObject {
@@ -48,7 +50,9 @@ final class SwiftDataInventoryBackupStore: InventoryBackupStore {
         for record in try context.fetch(FetchDescriptor<MagnetImageRecord>()) where images[record.id] == nil {
             if let data = record.data { images[record.id] = data }
         }
-        return StoredInventory(fridges: fridges, foods: foods, magnets: magnets, images: images)
+        let planner = BackupMealPlanner(dishes: try context.fetch(FetchDescriptor<PlannedDishRecord>()).map(\.dish),
+                                        shoppingItems: try context.fetch(FetchDescriptor<ShoppingItemRecord>()).map(\.item))
+        return StoredInventory(fridges: fridges, foods: foods, magnets: magnets, images: images, mealPlanner: planner)
     }
 
     func replaceInventory(_ inventory: StoredInventory) throws {
@@ -121,11 +125,30 @@ final class SwiftDataInventoryBackupStore: InventoryBackupStore {
             }
         }
 
+        if let planner = inventory.mealPlanner {
+            let existingDishes = Dictionary(grouping: try context.fetch(FetchDescriptor<PlannedDishRecord>()), by: \.id)
+            let keptDishes = Set(planner.dishes.map(\.id))
+            for (id, records) in existingDishes where !keptDishes.contains(id) { records.forEach(context.delete) }
+            for dish in planner.dishes {
+                if let records = existingDishes[dish.id] { records.forEach { $0.apply(dish) } } else { context.insert(PlannedDishRecord(dish)) }
+            }
+            let existingItems = Dictionary(grouping: try context.fetch(FetchDescriptor<ShoppingItemRecord>()), by: \.id)
+            let keptItems = Set(planner.shoppingItems.map(\.id))
+            for (id, records) in existingItems where !keptItems.contains(id) { records.forEach(context.delete) }
+            for item in planner.shoppingItems {
+                if let records = existingItems[item.id] { records.forEach { $0.apply(item) } } else { context.insert(ShoppingItemRecord(item)) }
+            }
+        }
+
         do {
             try context.save()
         } catch {
             context.rollback()
             throw error
+        }
+        if inventory.mealPlanner != nil {
+            NotificationCenter.default.post(name: .mealPlanDidChange, object: nil)
+            NotificationCenter.default.post(name: .shoppingListDidChange, object: nil)
         }
     }
 }

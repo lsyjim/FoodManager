@@ -16,6 +16,7 @@ enum BackupError: Error, Equatable {
     case invalidCompartmentReference(String)
     case invalidPreferences
     case invalidMagnets
+    case invalidMealPlanner
     /// Export only: a photo magnet's image file is missing, so a complete backup can't be written.
     case magnetImageMissing
     /// Current data couldn't be read, so no recovery snapshot exists: nothing was changed.
@@ -52,6 +53,7 @@ enum BackupError: Error, Equatable {
         case let .invalidCompartmentReference(name): return "食材「\(name)」所在的冰箱或隔層不存在，檔案可能已損壞。"
         case .invalidPreferences: return "備份內的偏好設定無效，檔案可能已損壞。"
         case .invalidMagnets: return "備份內的冰箱磁鐵資料無效，檔案可能已損壞。"
+        case .invalidMealPlanner: return "備份內的每週餐桌或購物清單資料無效，檔案可能已損壞。"
         case .magnetImageMissing: return "有磁鐵照片還沒從 iCloud 下載完成（或已遺失），這份備份不會包含那些照片。"
         case .currentDataUnreadable: return "無法讀取目前的資料，為了安全沒有進行還原。"
         case .recoverySnapshotFailed: return "無法建立還原前的保護副本（可能是儲存空間不足），沒有進行還原。"
@@ -163,6 +165,18 @@ enum BackupValidator {
         }
 
         try validateMagnets(backup, fridgeIDs: knownFridges)
+
+        if let planner = backup.mealPlanner {
+            guard planner.dishes.count <= 5_000, planner.shoppingItems.count <= 2_000,
+                  Set(planner.dishes.map(\.id)).count == planner.dishes.count,
+                  Set(planner.shoppingItems.map(\.id)).count == planner.shoppingItems.count else { throw BackupError.invalidMealPlanner }
+            do {
+                for dish in planner.dishes { try SwiftDataMealPlanStore.validate(dish) }
+                for item in planner.shoppingItems { try SwiftDataMealPlanStore.validate(item) }
+            } catch {
+                throw BackupError.invalidMealPlanner
+            }
+        }
 
         let preferences = backup.preferences
         let categoryIDs = preferences.favoriteCategoryIDs

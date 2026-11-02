@@ -29,11 +29,16 @@ final class SharedSyncEngine: CKSyncEngineDelegate, @unchecked Sendable {
 
     func start() {
         guard engines.isEmpty else { return }
+        SharedStore.cleanUpUploadFiles()
         for scope in [SharedDatabaseScope.private, .shared] {
             let database = scope == .private ? container.privateCloudDatabase : container.sharedCloudDatabase
             let saved = (try? store.syncState(scope: scope.rawValue))
                 .flatMap { try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: $0) }
             engines[scope] = CKSyncEngine(CKSyncEngine.Configuration(database: database, stateSerialization: saved, delegate: self))
+            // Anything an earlier run wrote but the server never confirmed goes out again.
+            if let unconfirmed = try? store.unconfirmedRecordIDs(scope: scope), !unconfirmed.isEmpty {
+                queueSave(unconfirmed, scope: scope)
+            }
         }
     }
 
@@ -65,6 +70,25 @@ final class SharedSyncEngine: CKSyncEngineDelegate, @unchecked Sendable {
         change.deletedFridgeZones.forEach(queueZoneDeletion(for:))
         queueDelete(change.deletes, scope: change.scope)
         queueSave(change.saves, scope: change.scope)
+        sendSoon(change.scope)
+    }
+
+    /// Local edits go out about a second later (bursts are combined) instead of whenever CKSyncEngine's own schedule
+    /// gets to them, so other members see changes quickly.
+    private var pendingSends: [SharedDatabaseScope: DispatchWorkItem] = [:]
+    static let sendDelay: TimeInterval = 1
+
+    private func sendSoon(_ scope: SharedDatabaseScope) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingSends[scope]?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let engine = self?.engines[scope] else { return }
+                Task { try? await engine.sendChanges() }
+            }
+            self.pendingSends[scope] = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.sendDelay, execute: work)
+        }
     }
 
     var isRunning: Bool { !engines.isEmpty }
@@ -208,6 +232,10 @@ final class SharedSyncEngine: CKSyncEngineDelegate, @unchecked Sendable {
                 // restores the server's state.
                 engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 logger.notice("Shared record save was refused by the server")
+            case .batchRequestFailed, .assetFileModified, .assetFileNotFound, .limitExceeded:
+                // Saves to one zone are atomic: when one record fails, the others in the batch come back as
+                // "batch request failed" and must be sent again; a photo file is rebuilt when the record is.
+                engine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
             case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable, .notAuthenticated,
                  .operationCancelled, .requestRateLimited:
                 break // CKSyncEngine retries these on its own.

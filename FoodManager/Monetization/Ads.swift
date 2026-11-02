@@ -39,7 +39,7 @@ struct AdConfiguration: Equatable {
 /// Screens of the app, for deciding where ads may appear.
 enum AppScreen: CaseIterable {
     case closedHome, openFridge, layoutEditing, foodEditor, reminderCenter, foodHistory, search
-    case settings, purchase, widget
+    case settings, purchase, widget, mealPlanner
 }
 
 /// Every ad placement in version 1.0. Nothing else may show an ad (food editing, layouts, widgets, launch…).
@@ -50,11 +50,14 @@ enum AdPlacement: CaseIterable {
     case decorationSavedInterstitial
     /// Interstitial the user asked for in 設定 → 觀看廣告.
     case manualInterstitial
+    /// Interstitial on 每週餐桌 after the second dish saved since the app was opened (shown once the editor closed).
+    case mealPlannedInterstitial
 
     func isAllowed(on screen: AppScreen) -> Bool {
         switch self {
         case .closedHomeBanner, .decorationSavedInterstitial: return screen == .closedHome
         case .manualInterstitial: return screen == .settings
+        case .mealPlannedInterstitial: return screen == .mealPlanner
         }
     }
 }
@@ -184,6 +187,7 @@ final class AdsCoordinator {
         #endif
         isPreparing = true
         defer { isPreparing = false }
+        let before = (canRequestAds, sdkReady, privacyOptionsRequired)
         if !canRequestAds {
             let result = await consent.gatherConsent(from: viewController)
             canRequestAds = result.canRequestAds
@@ -193,7 +197,9 @@ final class AdsCoordinator {
             await sdk.start()
             sdkReady = true
         }
-        publish()
+        // Only a real change is announced: the home screen calls this again when notified, so an unconditional
+        // notification would keep the two calling each other forever (constant CPU use while home is on screen).
+        if before != (canRequestAds, sdkReady, privacyOptionsRequired) { publish() }
         preloadAutomaticInterstitialIfUseful()
     }
 
@@ -215,6 +221,26 @@ final class AdsCoordinator {
     /// it is already loaded and every rule allows it — never waits, never shows later on another screen.
     @discardableResult
     func decorationSaved(presenter: UIViewController, presenterIdle: Bool) -> AutomaticInterstitialDecision {
+        presentAutomaticInterstitial(presenter: presenter, presenterIdle: presenterIdle)
+    }
+
+    /// Dishes saved in 每週餐桌 during the current usage session (a new session starts with each app launch, or after
+    /// 30 minutes in the background).
+    private var mealPlanSaves: (session: Int, count: Int) = (0, 0)
+
+    /// A dish was saved and 每週餐桌 is showing again. The second save of the session may show the interstitial — under
+    /// the same rules as every automatic ad (one per session, 2 a day, 10 minutes apart, nothing else full screen).
+    /// Returns nil for saves that aren't the second one.
+    @discardableResult
+    func mealPlanSaved(presenter: UIViewController, presenterIdle: Bool) -> AutomaticInterstitialDecision? {
+        if mealPlanSaves.session != session.number { mealPlanSaves = (session.number, 0) }
+        mealPlanSaves.count += 1
+        if mealPlanSaves.count == 1 { preloadAutomaticInterstitialIfUseful() }
+        guard mealPlanSaves.count == 2 else { return nil }
+        return presentAutomaticInterstitial(presenter: presenter, presenterIdle: presenterIdle)
+    }
+
+    private func presentAutomaticInterstitial(presenter: UIViewController, presenterIdle: Bool) -> AutomaticInterstitialDecision {
         let decision = frequency.decide(now: now(), adsAllowed: interstitialAllowed, shownThisSession: automaticShownThisSession,
                                         history: history, fullscreenActive: isFullscreenAdActive,
                                         loaded: interstitial?.isReady == true, presenterIdle: presenterIdle)

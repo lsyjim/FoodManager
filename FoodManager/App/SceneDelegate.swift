@@ -19,6 +19,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var sharedInventory: SharedInventory?
     /// 30-second fallback fetch while a shared fridge is on screen and the app is active.
     private var sharedPoller: SharedFetchPoller?
+    private var pushObserver: NSObjectProtocol?
     /// Built once from `MonetizationPolicy` (survives storage retries and fridge switches).
     private lazy var monetization = MonetizationServices.make(policy: .current, mode: persistence.mode)
 
@@ -175,6 +176,14 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             sharedEngine = SharedSyncEngine.make(policy: policy, mode: persistence.mode, cloudSyncEnabled: true)
             sharedEngine?.onChange = { [weak self] in self?.sharedDataChanged() }
             sharedEngine?.start()
+            if let engine = sharedEngine {
+                // Silent pushes for shared-fridge changes (no permission prompt). Earlier versions got this as a side
+                // effect of mirroring personal data; now only shared fridges need it.
+                UIApplication.shared.registerForRemoteNotifications()
+                pushObserver = NotificationCenter.default.addObserver(forName: .cloudKitPushReceived, object: nil, queue: .main) { [weak engine] _ in
+                    Task { try? await engine?.fetchChanges() }
+                }
+            }
             if let engine = sharedEngine {
                 sharedPoller = MainActor.assumeIsolated {
                     let poller = SharedFetchPoller { [weak engine] in try await engine?.fetchChanges() }

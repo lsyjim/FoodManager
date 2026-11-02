@@ -17,6 +17,9 @@ final class ReminderCenterViewController: UIViewController, UITableViewDataSourc
     private(set) var scope: Scope = .currentFridge
     private let scopeControl = UISegmentedControl(items: ["目前冰箱", "所有冰箱"])
     var onOpenSettings: (() -> Void)?
+    /// 食材日曆 / 食材統計 (nil hides the buttons).
+    var onOpenCalendar: (() -> Void)?
+    var onOpenStatistics: (() -> Void)?
 
     private(set) var storageFilter: StorageFilter
     private(set) var kindFilter: ReminderKindFilter
@@ -57,7 +60,23 @@ final class ReminderCenterViewController: UIViewController, UITableViewDataSourc
             self?.onOpenSettings?()
         })
         settings.accessibilityLabel = "通知設定"
-        navigationItem.rightBarButtonItem = settings
+        var items = [settings]
+        if onOpenStatistics != nil {
+            let statistics = UIBarButtonItem(image: UIImage(systemName: "chart.pie"), primaryAction: UIAction { [weak self] _ in
+                self?.onOpenStatistics?()
+            })
+            statistics.accessibilityLabel = "食材統計"
+            items.append(statistics)
+        }
+        if onOpenCalendar != nil {
+            let calendar = UIBarButtonItem(image: UIImage(systemName: "calendar"), primaryAction: UIAction { [weak self] _ in
+                self?.onOpenCalendar?()
+            })
+            calendar.accessibilityLabel = "食材日曆"
+            calendar.accessibilityIdentifier = "reminderCenter.calendar"
+            items.append(calendar)
+        }
+        navigationItem.rightBarButtonItems = items
         buildLayout()
         NotificationCenter.default.addObserver(self, selector: #selector(reload), name: .foodInventoryDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(reload), name: UIApplication.significantTimeChangeNotification, object: nil)

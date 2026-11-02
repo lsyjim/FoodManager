@@ -39,7 +39,8 @@ final class ICloudBackupViewController: UITableViewController {
     private func rebuild() {
         let copies = snapshots.list()
         sections = [
-            (nil, "資料只存在這台裝置，不會自動上傳或下載。需要時再手動備份到你自己的 iCloud；iCloud 會保留最近 \(ICloudBackupService.retainedVersions) 份備份，還原時可以選擇要哪一份。共享冰箱不包含在備份裡。",
+            (nil, "資料只存在這台裝置，不會自動上傳或下載。需要時再手動備份到你自己的 iCloud；iCloud 會保留最近 \(ICloudBackupService.retainedVersions) 份備份，還原時可以選擇要哪一份。"
+                  + (SharingPolicy.current.isActive ? "共享冰箱不包含在備份裡。" : ""),
              [.status, .backUp, .restore, .versions]),
             ("本機保護副本（只存在這台裝置）", "重要變更前 App 會自動在這台裝置留一份副本，需要時可從這裡還原（會取代目前的個人資料）。",
              copies.isEmpty ? [.noSnapshots] : copies.map(Row.snapshot))
@@ -235,7 +236,9 @@ final class ICloudBackupVersionsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         if let loadError { return loadError }
-        return restoring ? "選擇一份備份。還原會取代這台裝置上目前的個人冰箱與食材（共享冰箱不受影響），確認前不會有任何變更。" : nil
+        // Shared fridges are only mentioned in builds where they exist (never in the 1.0 release).
+        let shared = SharingPolicy.current.isActive ? "（共享冰箱不受影響）" : ""
+        return restoring ? "選擇一份備份。還原會取代這台裝置上目前的冰箱與食材\(shared)，確認前不會有任何變更。" : nil
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {

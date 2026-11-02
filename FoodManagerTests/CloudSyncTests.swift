@@ -426,7 +426,8 @@ final class CloudSyncTests: XCTestCase {
             }
             XCTAssertTrue(entity.relationships.isEmpty, "\(entity.name): no relationships (IDs only)")
         }
-        XCTAssertEqual(Set(container.schema.entities.map(\.name)), ["FridgeRecord", "FoodItemRecord", "MagnetRecord", "MagnetImageRecord"])
+        XCTAssertEqual(Set(container.schema.entities.map(\.name)), ["FridgeRecord", "FoodItemRecord", "MagnetRecord", "MagnetImageRecord",
+                                                                    "PlannedDishRecord", "ShoppingItemRecord"])
         XCTAssertTrue(container.configurations.allSatisfy { $0.cloudKitContainerIdentifier == nil }, "tests never sync")
     }
 

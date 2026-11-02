@@ -89,6 +89,47 @@ final class AdInterstitialTests: XCTestCase {
         XCTAssertEqual(interstitial.loadCount, 1)
     }
 
+    func testPreparingAgainAnnouncesNothing() async {
+        // The home screen prepares again whenever availability changes; a notification on every call made the two
+        // trigger each other forever (constant CPU use on the home screen).
+        let ads = await makeCoordinator()
+        var posts = 0
+        let token = NotificationCenter.default.addObserver(forName: .adAvailabilityDidChange, object: ads, queue: nil) { _ in posts += 1 }
+        defer { NotificationCenter.default.removeObserver(token) }
+        await ads.prepareIfNeeded(from: presenter)
+        await ads.prepareIfNeeded(from: presenter)
+        XCTAssertEqual(posts, 0)
+    }
+
+    func testSecondPlannedDishOfASessionShowsTheAd() async {
+        let ads = await makeCoordinator()
+        XCTAssertNil(ads.mealPlanSaved(presenter: presenter, presenterIdle: true), "first dish: no ad")
+        XCTAssertEqual(interstitial.presentCount, 0)
+        XCTAssertEqual(ads.mealPlanSaved(presenter: presenter, presenterIdle: true), .show, "second dish after opening the app")
+        XCTAssertEqual(interstitial.presentCount, 1)
+        XCTAssertNil(ads.mealPlanSaved(presenter: presenter, presenterIdle: true), "only the second one")
+        // A new usage session (app reopened after 30+ minutes away) counts again from zero; the usual limits still apply.
+        leaveApp(for: 40, ads)
+        XCTAssertNil(ads.mealPlanSaved(presenter: presenter, presenterIdle: true))
+        XCTAssertEqual(ads.mealPlanSaved(presenter: presenter, presenterIdle: true), .show)
+        XCTAssertEqual(history.dailyCount?.count, 2)
+    }
+
+    func testMealPlanAdRespectsTheSharedLimits() async {
+        let ads = await makeCoordinator()
+        XCTAssertEqual(ads.decorationSaved(presenter: presenter, presenterIdle: true), .show)
+        XCTAssertNil(ads.mealPlanSaved(presenter: presenter, presenterIdle: true))
+        XCTAssertEqual(ads.mealPlanSaved(presenter: presenter, presenterIdle: true), .alreadyShownThisSession, "one automatic ad per session")
+        XCTAssertEqual(interstitial.presentCount, 1)
+    }
+
+    func testMealPlanAdWaitsForAnIdlePlanner() async {
+        let ads = await makeCoordinator()
+        _ = ads.mealPlanSaved(presenter: presenter, presenterIdle: true)
+        XCTAssertEqual(ads.mealPlanSaved(presenter: presenter, presenterIdle: false), .userBusy)
+        XCTAssertEqual(interstitial.presentCount, 0)
+    }
+
     func testShortTripsToTheBackgroundKeepTheSession() async {
         let ads = await makeCoordinator()
         ads.decorationSaved(presenter: presenter, presenterIdle: true)

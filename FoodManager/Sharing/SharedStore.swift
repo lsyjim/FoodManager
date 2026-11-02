@@ -214,7 +214,8 @@ final class SharedStore {
 
     func fridges() throws -> [SharedFridgeSummary] {
         try makeContext().fetch(FetchDescriptor<SharedFridgeRecord>(sortBy: [SortDescriptor(\.createdAt)])).map {
-            SharedFridgeSummary(id: $0.id, name: $0.name, role: $0.role, ownership: $0.ownership)
+            SharedFridgeSummary(id: $0.id, name: $0.name, role: $0.role, ownership: $0.ownership,
+                                completedSharing: $0.role == .owner && $0.isShared && $0.linkSystemFields != nil)
         }
     }
 
@@ -350,6 +351,8 @@ struct SharedFridgeSummary: Equatable {
     let name: String
     let role: SharedFridgeRole
     let ownership: SharedFridgeOwnership
+    /// Owner: sharing finished — its StructureLink (written only after both shares exist) is on the server.
+    var completedSharing = false
 }
 
 enum SharedStoreError: Error, Equatable {

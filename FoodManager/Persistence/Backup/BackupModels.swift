@@ -9,8 +9,10 @@ import Foundation
 /// - 1 (Phase 4.2): fridges, foods, preferences.
 /// - 2 (Phase 4.3): adds `magnets` and `magnetImages` (photo bytes embedded, so the file is self-contained).
 ///   Both are optional in the file, so version-1 backups still import (as "no magnets").
+/// - 3 (Phase 5I): adds `mealPlanner` (每週餐桌 dishes and the 購物清單). Optional: restoring an older file leaves the
+///   current meal plan and shopping list as they are (the file says nothing about them).
 struct FoodManagerBackup: Codable, Equatable {
-    static let currentFormatVersion = 2
+    static let currentFormatVersion = 3
 
     var formatVersion: Int
     var exportedAt: Date
@@ -24,6 +26,8 @@ struct FoodManagerBackup: Codable, Equatable {
     var magnets: [FridgeMagnet]?
     /// Photo bytes for photo magnets, one entry per image ID (shared by duplicated magnets).
     var magnetImages: [BackupMagnetImage]?
+    /// Planned dishes and shopping-list items (nil in files before version 3).
+    var mealPlanner: BackupMealPlanner? = nil
 
     var allMagnets: [FridgeMagnet] { magnets ?? [] }
     var allMagnetImages: [BackupMagnetImage] { magnetImages ?? [] }
@@ -35,6 +39,20 @@ struct FoodManagerBackup: Codable, Equatable {
             && preferences == other.preferences
             && allMagnets.sorted { $0.id.uuidString < $1.id.uuidString } == other.allMagnets.sorted { $0.id.uuidString < $1.id.uuidString }
             && allMagnetImages.sorted { $0.id.uuidString < $1.id.uuidString } == other.allMagnetImages.sorted { $0.id.uuidString < $1.id.uuidString }
+            && (mealPlanner ?? .empty).sorted == (other.mealPlanner ?? .empty).sorted
+    }
+}
+
+/// 每週餐桌 and 購物清單 in a backup (the app's own Codable models; IDs kept).
+struct BackupMealPlanner: Codable, Equatable {
+    var dishes: [PlannedDish]
+    var shoppingItems: [ShoppingItem]
+
+    static let empty = BackupMealPlanner(dishes: [], shoppingItems: [])
+
+    var sorted: BackupMealPlanner {
+        BackupMealPlanner(dishes: dishes.sorted { $0.id.uuidString < $1.id.uuidString },
+                          shoppingItems: shoppingItems.sorted { $0.id.uuidString < $1.id.uuidString })
     }
 }
 

@@ -195,6 +195,6 @@ final class SharingIntegrationTests: XCTestCase {
         XCTAssertTrue(names.isDisjoint(with: ["FridgeRecord", "FoodItemRecord", "MagnetRecord", "MagnetImageRecord"]))
         // Personal backups and SwiftData mirroring never see shared records.
         XCTAssertEqual(Set(SwiftDataFridgeStore.schema.entities.map(\.name)),
-                       ["FridgeRecord", "FoodItemRecord", "MagnetRecord", "MagnetImageRecord"])
+                       ["FridgeRecord", "FoodItemRecord", "MagnetRecord", "MagnetImageRecord", "PlannedDishRecord", "ShoppingItemRecord"])
     }
 }

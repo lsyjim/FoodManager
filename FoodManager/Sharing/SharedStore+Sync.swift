@@ -1,4 +1,5 @@
 import CloudKit
+import CryptoKit
 import Foundation
 import SwiftData
 
@@ -254,6 +255,29 @@ extension SharedStore {
         try context.save()
     }
 
+    /// Records written here that the server never confirmed (e.g. dropped after a failed batch): sent again at launch.
+    /// Only what this device may write: everything of the owner's fridges, food and quantity ops of joined ones.
+    func unconfirmedRecordIDs(scope: SharedDatabaseScope) throws -> [CKRecord.ID] {
+        let context = makeContext()
+        let fridges = try context.fetch(FetchDescriptor<SharedFridgeRecord>()).filter { $0.role == scope.role && $0.status == .active }
+        var ids: [CKRecord.ID] = []
+        for fridge in fridges {
+            let fridgeID = fridge.id
+            let inventory = SharedZone.id(fridgeID: fridgeID, kind: .inventory, ownerName: fridge.zoneOwnerName)
+            let structure = SharedZone.id(fridgeID: fridgeID, kind: .structure, ownerName: fridge.zoneOwnerName)
+            if scope == .private {
+                if fridge.systemFields == nil { ids.append(CKRecord.ID(recordName: fridgeID.uuidString, zoneID: structure)) }
+                ids += try context.fetch(FetchDescriptor<SharedMagnetRecord>(predicate: #Predicate { $0.fridgeID == fridgeID }))
+                    .filter { $0.systemFields == nil }.map { CKRecord.ID(recordName: $0.id.uuidString, zoneID: structure) }
+            }
+            ids += try context.fetch(FetchDescriptor<SharedFoodRecord>(predicate: #Predicate { $0.fridgeID == fridgeID }))
+                .filter { $0.systemFields == nil }.map { CKRecord.ID(recordName: $0.id.uuidString, zoneID: inventory) }
+            ids += try context.fetch(FetchDescriptor<SharedQuantityOpRecord>(predicate: #Predicate { $0.fridgeID == fridgeID }))
+                .filter { $0.systemFields == nil }.map { CKRecord.ID(recordName: $0.id.uuidString, zoneID: inventory) }
+        }
+        return ids
+    }
+
     /// Whether this device never received the server's version of the record (a fresh insert).
     func hasNoSystemFields(_ recordID: CKRecord.ID) throws -> Bool {
         guard let id = UUID(uuidString: recordID.recordName) else { return false }
@@ -276,17 +300,38 @@ extension SharedStore {
         try makeContext().fetch(FetchDescriptor<SharedFoodRecord>(predicate: #Predicate { $0.id == id })).first?.updatedAt
     }
 
-    /// CKAsset upload file for a photo, in Caches (CloudKit reads it during the upload).
+    /// CKAsset upload file for a photo, in Caches. Named by its content (SHA-256) and never rewritten: an upload still
+    /// reading a file can't be broken by a later send of the same magnet ("asset file modified"); a changed photo gets
+    /// a new file. `id` only matters for callers that want a name per magnet in tests.
     static func writeUploadFile(id: UUID, data: Data) -> URL? {
-        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
-        let directory = caches.appendingPathComponent("SharedUploads", isDirectory: true)
-        let url = directory.appendingPathComponent(id.uuidString)
+        writeUploadFile(data: data, in: uploadDirectory)
+    }
+
+    static var uploadDirectory: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("SharedUploads", isDirectory: true)
+    }
+
+    static func writeUploadFile(data: Data, in directory: URL?) -> URL? {
+        guard let directory else { return nil }
+        let url = directory.appendingPathComponent(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+        let fileManager = FileManager.default
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size == data.count { return url }
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
             return url
         } catch {
             return nil
+        }
+    }
+
+    /// Removes upload files older than a week (uploads finish long before; anything missing is rewritten on demand).
+    static func cleanUpUploadFiles(olderThan age: TimeInterval = 7 * 86_400, in directory: URL? = uploadDirectory, now: Date = .now) {
+        guard let directory, let files = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        for file in files {
+            let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? now
+            if now.timeIntervalSince(modified) > age { try? FileManager.default.removeItem(at: file) }
         }
     }
 

@@ -41,7 +41,8 @@ final class SwiftDataFridgeStore: FridgeStore {
         self.container = container
     }
 
-    static let schema = Schema([FridgeRecord.self, FoodItemRecord.self, MagnetRecord.self, MagnetImageRecord.self])
+    static let schema = Schema([FridgeRecord.self, FoodItemRecord.self, MagnetRecord.self, MagnetImageRecord.self,
+                                PlannedDishRecord.self, ShoppingItemRecord.self])
 
     /// `url == nil && inMemory == false` uses the default app-support store (in the App Group container).
     /// Always local: `cloudKitDatabase: .none` is explicit, because with the iCloud entitlement present SwiftData would
@@ -51,6 +52,7 @@ final class SwiftDataFridgeStore: FridgeStore {
         // - Phase 2 adds FoodItemRecord, Phase 4.3 adds MagnetRecord (new entities).
         // - Phase 4.4 removes the unique constraints, adds attribute defaults and adds MagnetImageRecord.
         // - Phase 5E stops CloudKit mirroring; stores mirrored before open unchanged without it.
+        // - Phase 5I adds PlannedDishRecord and ShoppingItemRecord (new entities; existing rows untouched).
         let configuration: ModelConfiguration
         if let url {
             configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)

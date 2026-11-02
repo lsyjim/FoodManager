@@ -247,3 +247,22 @@ UMP 也有自己的隱私清單。
 **GO / NO-GO**：
 - **TestFlight 內部測試：GO**（需要你同意上傳）。實機與 iCloud 的驗證也要靠 TestFlight 版本完成。
 - **App Store 公開上架：NO-GO**。完成上表的 P0 與 P1（兩台實機 iCloud 同步、CloudKit Production schema、AdMob 後台、隱私權政策與支援網址、App 隱私問卷、iOS 17 測試）後，重新跑完整測試與 archive，再改為 GO。
+
+## 上架前確認（2026-10-27）
+
+- **廣告**
+  - Release 版內含正式的 AdMob App ID、Banner、Interstitial ID。
+  - 用 Release 版在模擬器實測：首頁 Banner 有出現廣告素材；第一次儲存冰箱裝飾後，插頁廣告也會出現。模擬器會自動被 Google 當成測試裝置，所以顯示「Test mode」。
+- **共享冰箱**
+  - Debug 版（從 Xcode 安裝到測試機）會開啟共享功能。
+  - Release 版（TestFlight、App Store）會隱藏，因為 `SharingPolicy` 關閉。以 Release 版在模擬器確認：
+    - 管理冰箱沒有「共享這台冰箱」「用邀請連結加入」，也沒有共享相關標籤。
+    - 冰箱選單只有「重新命名」「刪除冰箱」。
+    - iCloud 備份頁的說明文字不提共享。
+  - Release 版的權限檔沒有 `icloud-extended-share-access`。
+- **內建磁鐵**：共 6 張。11 張 F1 圖因為有商標授權問題已移除，備份在專案外的 `FoodManager素材備份/F1磁鐵`。
+- **Archive**：Release archive 在本機成功，版本 1.0 (1)，大小約 13 MB，**沒有上傳**。
+- **測試**：439 個單元測試、11 個 UI 測試全部通過。
+- **注意**
+  - TestFlight 版也是 Release 設定，所以看不到共享功能。只有從 Xcode 直接安裝的 Debug 版才有共享。
+  - 如果測試機曾用 Debug 版把冰箱轉為共享，之後改裝 App Store 版，那些共享冰箱不會顯示，因為 Release 版完全不讀取共享資料。上架版的使用者不會遇到這種情況。

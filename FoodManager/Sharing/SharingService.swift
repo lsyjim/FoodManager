@@ -80,10 +80,15 @@ final class SharingService {
     /// Owned fridges that exist both as a personal fridge and in the shared store while their conversion never
     /// completed (e.g. records of a failed attempt came back from iCloud). The personal fridge stays the real one;
     /// sharing it again resumes the conversion from scratch.
+    ///
+    /// A fridge whose sharing finished (its StructureLink, uploaded only after both shares exist, is on the server) is
+    /// never "incomplete": a personal copy next to it is
+    /// stale — e.g. brought back by the automatic iCloud mirroring of earlier versions — and stays hidden, so every edit
+    /// keeps going to the shared fridge its members see.
     func incompleteConversions() -> Set<UUID> {
         guard let personalIDs = try? personal.existingIDs(), !personalIDs.isEmpty,
               let shared = try? inventory.store.fridges() else { return [] }
-        let owned = Set(shared.filter { $0.role == .owner }.map(\.id))
+        let owned = Set(shared.filter { $0.role == .owner && !$0.completedSharing }.map(\.id))
         return owned.intersection(personalIDs).subtracting(pendingRemovals)
     }
 

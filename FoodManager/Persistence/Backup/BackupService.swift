@@ -152,7 +152,7 @@ final class BackupService {
     func restore(_ backup: FoodManagerBackup) throws {
         try BackupValidator.validate(backup)
         try checkRestorable(backup)
-        let target = Self.canonical(backup)
+        var target = Self.canonical(backup)
 
         // 1. Recovery snapshot, in memory and on disk, before anything changes. A photo whose file is already
         //    missing can't be part of it; that doesn't block the restore.
@@ -163,6 +163,8 @@ final class BackupService {
             throw BackupError.currentDataUnreadable
         }
         try writeRecoveryFile(previous)
+        // An older file (before 每週餐桌) says nothing about meal plans: keep the current ones as they are.
+        if target.mealPlanner == nil { target.mealPlanner = previous.mealPlanner }
 
         // 2. Magnet photos first (new files only add; nothing references them until the database says so),
         //    then the database in one save. If either fails, the stored data is unchanged.
@@ -225,12 +227,13 @@ final class BackupService {
         return FoodManagerBackup(formatVersion: FoodManagerBackup.currentFormatVersion, exportedAt: now(),
                                  applicationVersion: applicationVersion, backupID: UUID(),
                                  fridges: stored.fridges, foods: stored.foods, preferences: preferences.readPreferences(),
-                                 magnets: stored.magnets, magnetImages: images)
+                                 magnets: stored.magnets, magnetImages: images, mealPlanner: stored.mealPlanner ?? .empty)
     }
 
     private static func inventory(of backup: FoodManagerBackup) -> StoredInventory {
         StoredInventory(fridges: backup.fridges, foods: backup.foods, magnets: backup.allMagnets,
-                        images: Dictionary(backup.allMagnetImages.map { ($0.id, $0.data) }, uniquingKeysWith: { first, _ in first }))
+                        images: Dictionary(backup.allMagnetImages.map { ($0.id, $0.data) }, uniquingKeysWith: { first, _ in first }),
+                        mealPlanner: backup.mealPlanner)
     }
 
     private func writeImages(_ images: [BackupMagnetImage]) throws {

@@ -153,6 +153,41 @@ final class SharingFoundationTests: XCTestCase {
         XCTAssertFalse(try store.hasNoSystemFields(CKRecord.ID(recordName: UUID().uuidString, zoneID: record.recordID.zoneID)))
     }
 
+    func testUnconfirmedRecordsAreFoundForResending() throws {
+        let store = try makeStore()
+        let mine = FridgeFactory.makeDefault(), theirs = FridgeFactory.makeDefault()
+        try store.apply(modifications: [SharedRecordCoder.encode(try fridgeFields(mine), ownerName: CKCurrentUserDefaultName, systemFields: nil),
+                                        SharedRecordCoder.encode(try fridgeFields(theirs), ownerName: owner, systemFields: nil)],
+                        deletions: [], scope: .private)
+        try store.apply(modifications: [SharedRecordCoder.encode(try fridgeFields(theirs), ownerName: owner, systemFields: nil)],
+                        deletions: [], scope: .shared)
+        let context = store.makeContext()
+        let magnet = SharedMagnetRecord(id: UUID(), fridgeID: mine.id) // written here, never confirmed
+        context.insert(magnet)
+        try context.save()
+        XCTAssertEqual(try store.unconfirmedRecordIDs(scope: .private).map(\.recordName), [magnet.id.uuidString])
+        XCTAssertTrue(try store.unconfirmedRecordIDs(scope: .shared).isEmpty, "members never resend structure")
+    }
+
+    func testPhotoUploadFilesAreNeverRewritten() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("uploads-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let photo = Data((0..<500).map { UInt8($0 % 251) })
+        let first = try XCTUnwrap(SharedStore.writeUploadFile(data: photo, in: directory))
+        let modified = try XCTUnwrap(try first.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        Thread.sleep(forTimeInterval: 0.05)
+        let again = try XCTUnwrap(SharedStore.writeUploadFile(data: photo, in: directory))
+        XCTAssertEqual(again, first, "same photo, same file")
+        XCTAssertEqual(try again.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified,
+                       "an upload still reading it is never disturbed")
+        let other = try XCTUnwrap(SharedStore.writeUploadFile(data: photo + Data([1]), in: directory))
+        XCTAssertNotEqual(other, first, "a changed photo gets its own file")
+        XCTAssertEqual(try Data(contentsOf: first), photo)
+
+        SharedStore.cleanUpUploadFiles(olderThan: 60, in: directory, now: Date().addingTimeInterval(3600))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
+    }
+
     func testStructureFromTheInventoryZoneIsIgnored() throws {
         let fields = try fridgeFields()
         // A participant (who can write the inventory zone) plants a "fridge" record there to rename the fridge.

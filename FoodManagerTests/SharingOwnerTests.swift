@@ -210,6 +210,31 @@ final class SharingOwnerTests: XCTestCase {
         XCTAssertTrue(try fixture.personal.loadExisting().isEmpty)
     }
 
+    func testResurrectedPersonalCopyNeverTakesOverALiveSharedFridge() async throws {
+        let (fixture, changes) = try makeFixture()
+        let fridge = fixture.session.loadResult.fridge
+        _ = try await fixture.service.share(fridgeID: fridge.id, backups: backups(fixture.session))
+        // The engine uploads the StructureLink written when sharing finished.
+        let linkID = CKRecord.ID(recordName: fridge.id.uuidString, zoneID: SharedZone.id(fridgeID: fridge.id, kind: .inventory))
+        try fixture.inventory.store.didSave(try XCTUnwrap(try fixture.inventory.store.outgoingRecord(for: linkID, scope: .private)))
+        // The old automatic mirroring brings the removed personal copy back.
+        try fixture.personal.create(fridge)
+        XCTAssertTrue(fixture.service.incompleteConversions().isEmpty)
+        XCTAssertEqual(fixture.service.ownership(of: fridge.id), .sharedOwned, "still labelled 已共享 · 我是主人")
+
+        // The owner's magnet edits keep going to the shared fridge (and so to its members).
+        let magnets = RoutingMagnetStore(personal: SwiftDataMagnetStore(container: fixture.container), shared: fixture.inventory)
+        let magnet = FridgeMagnet(id: UUID(), fridgeID: fridge.id, source: .builtIn, builtInAssetID: "daisy", localImageID: nil,
+                                  centerX: 0.5, centerY: 0.5, width: 0.3, height: 0.3, rotation: 0, zIndex: 0,
+                                  createdAt: .now, updatedAt: .now)
+        try magnets.replaceMagnets([magnet], fridgeID: fridge.id, newImages: [:])
+        XCTAssertEqual(try fixture.inventory.magnets(fridgeID: fridge.id), [magnet])
+        XCTAssertEqual(changes().last?.saves.first?.zoneID, SharedZone.id(fridgeID: fridge.id, kind: .structure), "uploaded")
+        XCTAssertTrue(try SwiftDataMagnetStore(container: fixture.container).magnets(fridgeID: fridge.id).isEmpty)
+        let routing = RoutingFridgeStore(personal: fixture.personal, shared: fixture.inventory)
+        XCTAssertEqual(try routing.loadAll().map(\.fridge.id), [fridge.id], "shown once")
+    }
+
     func testFailureNamesTheStepAndCloudKitCode() async throws {
         final class FailingCloud: SharingCloud {
             var isReady = true
